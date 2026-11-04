@@ -590,14 +590,16 @@ def api_create():
 def api_open(pid: str):
     if not ccp.is_valid_profile_id(pid):
         return err("ID profil tidak valid.")
-    url = (request.get_json(silent=True) or {}).get("url", ccp.DEFAULT_URL) or None
+    data = request.get_json(silent=True) or {}
+    normal_open = bool(data.get("normal", False))
+    url = None if normal_open else (data.get("url", ccp.DEFAULT_URL) or None)
     if url and not re.match(r"^https?://", url):
         return err("URL harus diawali http:// atau https://")
-    if not ARGS.dry_run:
+    if not ARGS.dry_run and not normal_open:
         ticket = GENERATE_BRIDGE.issue_pairing(pid)
         url = f"http://127.0.0.1:{ARGS.port}/pair#{ticket}"
     return _launch(
-        Job(f"Buka profil {pid}", pid),
+        Job(f"{'Buka Chrome' if normal_open else 'Buka profil'} {pid}", pid),
         ccp.open_profile,
         ARGS.chrome,
         ARGS.profiles_dir,

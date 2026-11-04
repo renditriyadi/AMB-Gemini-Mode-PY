@@ -964,6 +964,22 @@ class GenerateApiTests(unittest.TestCase):
         self.assertEqual(launch.call_args.args[5], "http://127.0.0.1:8000/pair#one_time_ticket")
         self.assertEqual(len(launch.call_args.args), 7)
 
+    def test_server_normal_open_does_not_set_a_destination_or_pair_extension(self):
+        with (
+            patch("server.GENERATE_BRIDGE.issue_pairing") as issue_pairing,
+            patch("server._launch", return_value={"ok": True}) as launch,
+        ):
+            response = self.client.post(
+                "/api/profiles/profile-one/open",
+                json={"normal": True},
+                headers=self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        issue_pairing.assert_not_called()
+        self.assertEqual(launch.call_args.args[0].title, "Buka Chrome profile-one")
+        self.assertIsNone(launch.call_args.args[5])
+
     def test_server_clear_profile_starts_clear_job(self):
         with patch("server._launch", return_value=server.app.response_class(
             response='{"id":"clear-job"}',

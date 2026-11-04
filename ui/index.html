@@ -492,20 +492,21 @@ function row(p){
     b.onclick=fn;
     actions.append(b);
   };
-  add("Grab","main",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, Clear, dan Hapus.":"",()=>dialog("grab",p.id));
-  add("Buka","",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, Clear, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{}));
+  add("Buka","",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{normal:true}));
+  add("Grab","main",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.":"",()=>dialog("grab",p.id));
+  add("Gemini","",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{}));
   add("Flow","",active&&!p.flow_cdp?"Tutup Chrome lalu buka ulang dengan tombol Flow.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/flow/open`,{}));
   add("Tutup","","",()=>run(`/profiles/${encodeURIComponent(p.id)}/close`,{}));
   add("Clear","danger",active?"Tutup Chrome untuk membersihkan data profil.":"",()=>{
     const message=`Bersihkan data browser profil '${p.id}'? Sesi login, cookie, riwayat, dan data situs termasuk Google/Gemini akan dihapus. Ekstensi dan konfigurasinya tetap dipertahankan. Profil tetap ada, tetapi kamu perlu login lagi.`;
     if(confirm(message))run(`/profiles/${encodeURIComponent(p.id)}/clear`,{});
   });
-  add("Hapus","danger",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.":"",()=>confirm(`Hapus profil '${p.id}' beserta sesinya?`)&&run("/profiles/delete",{ids:[p.id]}));
+  add("Hapus","danger",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, dan Hapus.":"",()=>confirm(`Hapus profil '${p.id}' beserta sesinya?`)&&run("/profiles/delete",{ids:[p.id]}));
   if(active||p.busy){
     const hint=document.createElement("span");
     hint.className="action-hint";
     hint.id=hintId;
-    hint.textContent=p.busy?"Aksi profil dinonaktifkan selama proses berjalan.":"Tutup Chrome untuk mengaktifkan Grab, Buka, Clear, dan Hapus.";
+    hint.textContent=p.busy?"Aksi profil dinonaktifkan selama proses berjalan.":"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.";
     actions.append(hint);
   }
   card.append(info,actions);
