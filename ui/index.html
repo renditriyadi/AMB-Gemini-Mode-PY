@@ -60,27 +60,86 @@
       <form id="generateForm">
         <label id="generatePromptLabel" for="generatePrompt">Prompt video</label>
         <textarea id="generatePrompt" rows="8" maxlength="5000" required></textarea>
-        <div class="generate-footer">
-          <div>
+        <div class="generate-toolbar">
+          <div class="generate-profile">
             <label for="generateProfile">Profil Chrome</label>
             <select id="generateProfile" required></select>
           </div>
-          <div>
-            <label for="generateType">Mode</label>
-            <select id="generateType">
-              <option value="video">Video</option>
-              <option value="image">Gambar</option>
-            </select>
+          <div class="generate-actions">
+            <div class="generate-reference" id="flowReferenceMedia">
+              <input id="generateReferenceMedia" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,.m4v" hidden>
+              <button class="btn generate-reference-pick" id="generateReferencePick" type="button" aria-label="Tambah media referensi">+</button>
+              <div class="generate-reference-preview hidden" id="generateReferencePreview">
+                <img class="hidden" id="generateReferenceImagePreview" alt="Preview media referensi">
+                <video class="hidden" id="generateReferenceVideoPreview" muted playsinline></video>
+                <button class="btn danger" id="generateReferenceRemove" type="button" aria-label="Hapus media referensi">×</button>
+              </div>
+            </div>
+            <button class="btn" id="generateSettingsOpen" type="button" aria-haspopup="dialog" aria-controls="generateSettingsDialog">Settings</button>
+            <button class="btn main" id="generateSend" type="submit">Generate Video</button>
           </div>
-          <div>
-            <label for="generateRatio">Rasio</label>
-            <select id="generateRatio">
-              <option value="9:16">9:16</option>
-              <option value="16:9">16:9</option>
-            </select>
-          </div>
-          <div class="row generate-submit-row"><button class="btn main" id="generateSend" type="submit">Generate Video</button></div>
         </div>
+        <dialog id="generateSettingsDialog" class="generate-settings-dialog" aria-labelledby="generateSettingsTitle">
+          <div class="generate-settings-heading">
+            <div>
+              <h2 id="generateSettingsTitle">Settings generate</h2>
+              <p class="sub">Pilih provider dan sesuaikan pengaturan generate.</p>
+            </div>
+            <button class="btn" id="generateSettingsClose" type="button" aria-label="Tutup settings">Tutup</button>
+          </div>
+          <div class="generate-settings-grid">
+            <div>
+              <label for="generateProvider">Provider</label>
+              <select id="generateProvider">
+                <option value="gemini">Gemini</option>
+                <option value="flow" selected>Google Flow</option>
+              </select>
+            </div>
+            <div class="flow-setting">
+              <label for="generateType">Mode</label>
+              <select id="generateType">
+                <option value="video">Video</option>
+                <option value="image">Gambar</option>
+              </select>
+            </div>
+            <div class="flow-setting">
+              <label for="generateRatio">Rasio</label>
+              <select id="generateRatio">
+                <option value="9:16">9:16</option>
+                <option value="16:9">16:9</option>
+                <option value="4:3">4:3</option>
+                <option value="1:1">1:1</option>
+                <option value="3:4">3:4</option>
+              </select>
+            </div>
+            <div class="flow-setting">
+              <label for="flowModel">Model Flow</label>
+              <select id="flowModel">
+                <option value="Omni 1.1 Flash" selected>Omni 1.1 Flash</option>
+                <option value="Veo 3.1 - Lite">Veo 3.1 - Lite</option>
+                <option value="Veo 3.1 - Fast">Veo 3.1 - Fast</option>
+                <option value="Veo 3.1 - Quality">Veo 3.1 - Quality</option>
+              </select>
+            </div>
+            <div class="flow-setting">
+              <label for="flowResolution">Resolusi Flow</label>
+              <select id="flowResolution">
+                <option value="360p">360p</option>
+                <option value="720p" selected>720p</option>
+              </select>
+            </div>
+            <div class="flow-setting">
+              <label for="flowDuration">Durasi Flow</label>
+              <select id="flowDuration">
+                <option value="4 dtk">4 detik</option>
+                <option value="6 dtk">6 detik</option>
+                <option value="8 dtk">8 detik</option>
+                <option value="10 dtk" selected>10 detik</option>
+              </select>
+            </div>
+          </div>
+          <p class="sub generate-settings-notice" id="flowNotice" hidden></p>
+        </dialog>
       </form>
       <div class="err" id="generateErr" role="alert"></div>
     </section>
@@ -148,7 +207,10 @@ themeToggle.onclick=()=>{
   localStorage.setItem("amb-mode-theme",theme);
 };
 async function api(path,method="GET",body){
-  const r=await fetch("/api"+path,{method,headers:{"X-UI-Token":TOKEN,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});
+  const formData=body instanceof FormData;
+  const headers={"X-UI-Token":TOKEN};
+  if(body&&!formData)headers["Content-Type"]="application/json";
+  const r=await fetch("/api"+path,{method,headers,body:body?(formData?body:JSON.stringify(body)):undefined});
   const d=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(d.error||("HTTP "+r.status));
   return d;
@@ -166,7 +228,7 @@ function logClear(){$("#log").textContent="";$("#clearLog").disabled=true}
 $("#clearLog").onclick=logClear;
 function watch(j){
   job=j.id;since=0;logClear();$("#jobTitle").textContent=j.title;
-  if(S)renderGenerate(S);
+  if(S)updateGenerateControls();
   clearTimeout(timer);tick();
 }
 async function tick(){
@@ -260,7 +322,8 @@ function renderHistoryCards(container,items){
     const created=new Date(item.created_at);
     meta.textContent=[
       item.media_type==="image"?"Gambar":"Video",
-      item.ratio,
+        item.provider==="flow"?"Google Flow":"Gemini",
+        item.ratio,
       `Profil ${item.profile_id}`,
       Number.isNaN(created.getTime())?"":created.toLocaleString(),
       item.status==="complete"?"Selesai":item.status==="waiting_media"?"Menunggu hasil":item.status==="running"?"Berjalan":"Gagal",
@@ -287,15 +350,6 @@ function renderHistoryCards(container,items){
         previewButton.onclick=()=>showMediaPreview(item);
         actions.append(previewButton);
       }
-    }
-    if(item.chat_id){
-      const chat=document.createElement("a");
-      chat.className="btn";
-      chat.href=`https://gemini.google.com/app/${encodeURIComponent(item.chat_id)}`;
-      chat.target="_blank";
-      chat.rel="noopener noreferrer";
-      chat.textContent="Buka chat";
-      actions.append(chat);
     }
     const deleteButton=document.createElement("button");
     deleteButton.className="btn danger";
@@ -366,19 +420,24 @@ function renderServerInfo(state){
   }));
 }
 function renderGenerate(state){
+  if(!state)return;
   const select=$("#generateProfile"),current=select.value;
+  const provider=$("#generateProvider").value;
   const profiles=state.profiles;
   const options=profiles.map(p=>{
-    const availability=p.busy?"sedang diproses":p.extension_ready?"extension siap":p.pids.length?"Chrome terbuka":"Chrome tertutup";
+    const availability=provider==="flow"
+      ?p.busy?"sedang diproses":p.flow_cdp?"Flow CDP siap":p.pids.length?"Chrome perlu dibuka ulang dengan Flow":"Chrome tertutup"
+      :p.busy?"sedang diproses":p.extension_ready?"extension siap":p.pids.length?"Chrome terbuka":"Chrome tertutup";
     const option=new Option(`${p.id} · ${availability}`,p.id);
-    option.disabled=p.busy;
+    option.disabled=p.busy||(provider==="flow"&&p.pids.length>0&&!p.flow_cdp);
     return option;
   });
   if(!options.length)options.push(new Option("Belum ada profil Chrome",""));
   select.replaceChildren(...options);
   if(profiles.some(p=>p.id===current))select.value=current;
   const selected=profiles.find(p=>p.id===select.value);
-  $("#generateSend").disabled=!selected||selected.busy||Boolean(job);
+  const unavailableFlowProfile=provider==="flow"&&selected&&selected.pids.length>0&&!selected.flow_cdp;
+  $("#generateSend").disabled=!selected||selected.busy||Boolean(job)||unavailableFlowProfile;
   $("#generatePrompt").disabled=Boolean(job);
 }
 function row(p){
@@ -416,7 +475,7 @@ function row(p){
   if(active){
     const extension=document.createElement("span");
     extension.className="sub";
-    extension.textContent=p.extension_ready?"Extension AMB siap":p.pairing?"Memasangkan extension AMB...":"Extension AMB belum terhubung";
+    extension.textContent=p.flow_cdp?"CDP Flow siap":p.extension_ready?"Extension AMB siap":p.pairing?"Memasangkan extension AMB...":"Extension AMB belum terhubung";
     copy.append(extension);
   }
   info.append(avatar,copy);
@@ -433,15 +492,20 @@ function row(p){
     b.onclick=fn;
     actions.append(b);
   };
-  add("Grab","main",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.":"",()=>dialog("grab",p.id));
-  add("Buka","",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{}));
+  add("Grab","main",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, Clear, dan Hapus.":"",()=>dialog("grab",p.id));
+  add("Buka","",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, Clear, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{}));
+  add("Flow","",active&&!p.flow_cdp?"Tutup Chrome lalu buka ulang dengan tombol Flow.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/flow/open`,{}));
   add("Tutup","","",()=>run(`/profiles/${encodeURIComponent(p.id)}/close`,{}));
+  add("Clear","danger",active?"Tutup Chrome untuk membersihkan data profil.":"",()=>{
+    const message=`Bersihkan data browser profil '${p.id}'? Sesi login, cookie, riwayat, dan data situs termasuk Google/Gemini akan dihapus. Ekstensi dan konfigurasinya tetap dipertahankan. Profil tetap ada, tetapi kamu perlu login lagi.`;
+    if(confirm(message))run(`/profiles/${encodeURIComponent(p.id)}/clear`,{});
+  });
   add("Hapus","danger",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.":"",()=>confirm(`Hapus profil '${p.id}' beserta sesinya?`)&&run("/profiles/delete",{ids:[p.id]}));
   if(active||p.busy){
     const hint=document.createElement("span");
     hint.className="action-hint";
     hint.id=hintId;
-    hint.textContent=p.busy?"Aksi profil dinonaktifkan selama proses berjalan.":"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.";
+    hint.textContent=p.busy?"Aksi profil dinonaktifkan selama proses berjalan.":"Tutup Chrome untuk mengaktifkan Grab, Buka, Clear, dan Hapus.";
     actions.append(hint);
   }
   card.append(info,actions);
@@ -498,23 +562,119 @@ $("#dlgForm").onsubmit=async e=>{
 
 /* ---- generate video */
 const GENERATE_PROMPT_LIMIT=5000;
+const MAX_REFERENCE_IMAGE_BYTES=20*1024*1024;
+const MAX_REFERENCE_VIDEO_BYTES=100*1024*1024;
+let referenceMediaPreviewUrl=null;
+const FLOW_VIDEO_MODELS=["Omni 1.1 Flash","Veo 3.1 - Lite","Veo 3.1 - Fast","Veo 3.1 - Quality"];
+const FLOW_IMAGE_MODELS=["Nano Banana Pro","Nano Banana 2 Lite","Nano Banana 2.1"];
+const FLOW_IMAGE_RATIOS=["16:9","4:3","1:1","3:4","9:16"];
 function generatePrefix(){
   const type=$("#generateType").value==="image"?"Gambar":"Video";
   return `Generate ${type}, ${$("#generateRatio").value}`;
 }
 function updateGenerateControls(){
-  const type=$("#generateType").value==="image"?"Gambar":"Video";
+  const provider=$("#generateProvider").value;
+  const mediaType=$("#generateType").value;
+  const image=mediaType==="image";
+  const type=image?"Gambar":"Video";
+  $("#generateReferenceMedia").disabled=Boolean(job);
+  $("#generateReferencePick").disabled=Boolean(job);
+  $("#generateReferenceRemove").disabled=Boolean(job);
+  const modelOptions=provider==="flow"&&image?FLOW_IMAGE_MODELS:FLOW_VIDEO_MODELS;
+  const modelMode=`${provider}:${mediaType}`;
+  if($("#flowModel").dataset.mode!==modelMode){
+    const previousModel=$("#flowModel").value;
+    $("#flowModel").replaceChildren(...modelOptions.map(model=>{
+      const option=document.createElement("option");
+      option.value=model;
+      option.textContent=model;
+      return option;
+    }));
+    $("#flowModel").value=modelOptions.includes(previousModel)
+      ?previousModel
+      :(image&&provider==="flow"?"Nano Banana 2.1":"Omni 1.1 Flash");
+    $("#flowModel").dataset.mode=modelMode;
+  }
+  const supportedRatios=provider==="flow"&&image?FLOW_IMAGE_RATIOS:["9:16","16:9"];
+  const ratio=$("#generateRatio");
+  [...ratio.options].forEach(option=>{
+    option.disabled=!supportedRatios.includes(option.value);
+  });
+  if(!supportedRatios.includes(ratio.value))ratio.value="9:16";
   const prompt=$("#generatePrompt");
-  const maxPromptLength=GENERATE_PROMPT_LIMIT-generatePrefix().length-1;
+  const prefix=provider==="flow"?"":`${generatePrefix()}\n`;
+  const maxPromptLength=GENERATE_PROMPT_LIMIT-prefix.length;
   prompt.maxLength=maxPromptLength;
   $("#generateTitle").textContent=`Generate ${type}`;
   $("#generatePromptLabel").textContent=`Prompt ${type.toLowerCase()}`;
   $("#generateSend").textContent=`Generate ${type}`;
+  $("#generateSettingsOpen").textContent=`Settings · ${provider==="flow"?"Google Flow":"Gemini"} · ${type}`;
+  $("#flowNotice").textContent=image
+    ?"Flow Gambar: output selalu 1 gambar. Prompt diisi sebelum setelan diterapkan; Agen dipastikan nonaktif. Profil harus dibuka dengan CDP Flow."
+    :"Flow Video: output selalu 1 video. Prompt diisi sebelum setelan diterapkan; Agen dipastikan nonaktif. Profil harus dibuka dengan CDP Flow.";
+  $("#flowNotice").hidden=provider!=="flow";
+  ["#flowModel","#flowResolution","#flowDuration"].forEach(selector=>{
+    const visible=provider==="flow"&&(selector==="#flowModel"||!image);
+    $(selector).closest(".flow-setting").classList.toggle("hidden",!visible);
+    $(selector).disabled=!visible;
+  });
+  renderGenerate(S);
 }
 $("#generatePrompt").oninput=updateGenerateControls;
 $("#generateType").onchange=updateGenerateControls;
 $("#generateRatio").onchange=updateGenerateControls;
+$("#generateProvider").onchange=updateGenerateControls;
+$("#flowModel").onchange=updateGenerateControls;
+$("#flowResolution").onchange=updateGenerateControls;
+$("#flowDuration").onchange=updateGenerateControls;
 $("#generateProfile").onchange=()=>renderGenerate(S);
+function clearReferenceMedia(){
+  if(referenceMediaPreviewUrl)URL.revokeObjectURL(referenceMediaPreviewUrl);
+  referenceMediaPreviewUrl=null;
+  const image=$("#generateReferenceImagePreview");
+  image.removeAttribute("src");
+  image.classList.add("hidden");
+  const video=$("#generateReferenceVideoPreview");
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  video.classList.add("hidden");
+  $("#generateReferenceMedia").value="";
+  $("#generateReferencePreview").classList.add("hidden");
+}
+$("#generateReferencePick").onclick=()=>$("#generateReferenceMedia").click();
+$("#generateReferenceMedia").onchange=()=>{
+  const file=$("#generateReferenceMedia").files[0];
+  if(!file)return;
+  const isImage=/\.(png|jpe?g|webp)$/i.test(file.name);
+  const isVideo=/\.(mp4|webm|mov|m4v)$/i.test(file.name);
+  const maxBytes=isImage?MAX_REFERENCE_IMAGE_BYTES:MAX_REFERENCE_VIDEO_BYTES;
+  if(!isImage&&!isVideo){
+    clearReferenceMedia();
+    $("#generateErr").textContent="Format media referensi tidak didukung.";
+    return;
+  }
+  if(file.size>maxBytes){
+    clearReferenceMedia();
+    $("#generateErr").textContent=isImage
+      ?"Ukuran gambar referensi maksimal 20 MB."
+      :"Ukuran video referensi maksimal 100 MB.";
+    return;
+  }
+  if(referenceMediaPreviewUrl)URL.revokeObjectURL(referenceMediaPreviewUrl);
+  referenceMediaPreviewUrl=URL.createObjectURL(file);
+  const preview=isImage?$("#generateReferenceImagePreview"):$("#generateReferenceVideoPreview");
+  preview.src=referenceMediaPreviewUrl;
+  preview.classList.remove("hidden");
+  $("#generateReferencePreview").classList.remove("hidden");
+  $("#generateErr").textContent="";
+};
+$("#generateReferenceRemove").onclick=clearReferenceMedia;
+$("#generateSettingsOpen").onclick=()=>$("#generateSettingsDialog").showModal();
+$("#generateSettingsClose").onclick=()=>$("#generateSettingsDialog").close();
+$("#generateSettingsDialog").addEventListener("click",event=>{
+  if(event.target===$("#generateSettingsDialog"))$("#generateSettingsDialog").close();
+});
 $("#generateForm").onkeydown=e=>{
   if(e.key==="Enter"&&e.ctrlKey&&!e.isComposing){
     e.preventDefault();
@@ -525,15 +685,34 @@ $("#generateForm").onkeydown=e=>{
 $("#generateForm").onsubmit=async e=>{
   e.preventDefault();
   $("#generateErr").textContent="";
+  const provider=$("#generateProvider").value;
   try{
-    const prompt=`${generatePrefix()}\n${$("#generatePrompt").value.trim()}`;
-    const started=await api("/generate","POST",{
+    const prompt=provider==="flow"
+      ?$("#generatePrompt").value.trim()
+      :`${generatePrefix()}\n${$("#generatePrompt").value.trim()}`;
+    const requestData={
       profile_id:$("#generateProfile").value,
+      provider,
       prompt,
       media_type:$("#generateType").value,
       ratio:$("#generateRatio").value,
-    });
+      flow_model:$("#flowModel").value,
+      flow_resolution:$("#flowResolution").value,
+      flow_duration:$("#flowDuration").value,
+    };
+    const referenceMedia=$("#generateReferenceMedia").files[0];
+    if(referenceMedia&&provider!=="flow"){
+      throw new Error("Media referensi hanya didukung oleh Google Flow.");
+    }
+    let body=requestData;
+    if(provider==="flow"&&referenceMedia){
+      body=new FormData();
+      Object.entries(requestData).forEach(([key,value])=>body.append(key,value));
+      body.append("reference_media",referenceMedia,referenceMedia.name);
+    }
+    const started=await api("/generate","POST",body);
     $("#generatePrompt").value="";
+    clearReferenceMedia();
     updateGenerateControls();
     watch(started);
     refreshHistory();

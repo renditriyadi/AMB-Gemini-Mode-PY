@@ -33,11 +33,14 @@ from datetime import datetime, timezone
 from flask import Flask, abort, jsonify, request, send_from_directory
 
 import create_chrome_profile as ccp
+import flow_generate
 import gemini_generate_bridge as generate_bridge
 
 HERE = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(24)
 MAX_PROMPT = 5000
+MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_REFERENCE_VIDEO_BYTES = 100 * 1024 * 1024
 EXTENSION_CONNECT_TIMEOUT = 45
 PROFILE_EMAIL_FILE = "python-mode-email.txt"
 MEDIA_CACHE_DIR = HERE / "media-cache"
@@ -56,6 +59,7 @@ def _history_connection() -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             profile_id TEXT NOT NULL,
             chat_id TEXT NOT NULL DEFAULT '',
+            provider TEXT NOT NULL DEFAULT 'gemini',
             media_type TEXT NOT NULL,
             ratio TEXT NOT NULL,
             prompt TEXT NOT NULL,
@@ -66,6 +70,13 @@ def _history_connection() -> sqlite3.Connection:
             size_bytes INTEGER NOT NULL DEFAULT 0
         )
     """)
+    columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(generations)")
+    }
+    if "provider" not in columns:
+        connection.execute(
+            "ALTER TABLE generations ADD COLUMN provider TEXT NOT NULL DEFAULT 'gemini'"
+        )
     connection.commit()
     return connection
 
@@ -74,12 +85,13 @@ def _create_generation_record(job: "GenerateJob", prompt: str) -> None:
     with closing(_history_connection()) as connection:
         connection.execute(
             """INSERT INTO generations
-               (job_id, created_at, profile_id, media_type, ratio, prompt, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'running')""",
+               (job_id, created_at, profile_id, provider, media_type, ratio, prompt, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'running')""",
             (
                 job.id,
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 job.profile,
+                job.provider,
                 job.media_type,
                 job.ratio,
                 prompt,
@@ -282,11 +294,29 @@ class Job:
 
 
 class GenerateJob(Job):
-    def __init__(self, profile_id: str, media_type: str, ratio: str) -> None:
+    def __init__(
+        self,
+        profile_id: str,
+        media_type: str,
+        ratio: str,
+        provider: str = "gemini",
+        *,
+        flow_model: str = "Omni 1.1 Flash",
+        flow_resolution: str = "720p",
+        flow_duration: str = "10 dtk",
+        reference_image_path: Optional[Path] = None,
+        reference_video_path: Optional[Path] = None,
+    ) -> None:
         label = "Gambar" if media_type == "image" else "Video"
-        super().__init__(f"Generate {label} · {profile_id}", profile_id)
+        super().__init__(f"Generate {label} · {provider.title()} · {profile_id}", profile_id)
+        self.provider = provider
         self.media_type = media_type
         self.ratio = ratio
+        self.flow_model = flow_model
+        self.flow_resolution = flow_resolution
+        self.flow_duration = flow_duration
+        self.reference_image_path = reference_image_path
+        self.reference_video_path = reference_video_path
         self.chat_id = ""
 
 
@@ -336,6 +366,11 @@ def start_job(job: Job, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Jo
                     error=str(exc),
                     chat_id=job.chat_id,
                 )
+        finally:
+            if isinstance(job, GenerateJob):
+                for reference_path in (job.reference_image_path, job.reference_video_path):
+                    if reference_path:
+                        reference_path.unlink(missing_ok=True)
 
     threading.Thread(target=target, daemon=True).start()
     return job
@@ -415,6 +450,10 @@ def bridge_runner() -> int:
 # Flask
 # --------------------------------------------------------------------------
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = max(
+    MAX_REFERENCE_IMAGE_BYTES,
+    MAX_REFERENCE_VIDEO_BYTES,
+) + 1024 * 1024
 ARGS: argparse.Namespace
 
 
@@ -429,6 +468,11 @@ def guard() -> None:
 
 def err(message: str, code: int = 400):
     return jsonify({"error": message}), code
+
+
+@app.errorhandler(413)
+def request_too_large(_error):
+    return err("Ukuran gambar referensi maksimal 20 MB.", 413)
 
 
 @app.get("/")
@@ -504,6 +548,7 @@ def state():
     profiles = [
         {"id": p.name, "pids": (running or {}).get(p.name, []),
          "busy": any(j.active and j.profile == p.name for j in JOBS.values()),
+         "flow_cdp": bool((running or {}).get(p.name)) and flow_generate.is_ready(p),
          **GENERATE_BRIDGE.status(p.name),
          "email": _profile_email(p)}
         for p in ccp.list_profiles(ARGS.profiles_dir)
@@ -560,6 +605,50 @@ def api_open(pid: str):
         url,
         ARGS.dry_run,
     )
+
+
+def _open_flow_profile(profile_id: str) -> int:
+    if ARGS.dry_run:
+        return ccp.open_profile(
+            ARGS.chrome,
+            ARGS.profiles_dir,
+            profile_id,
+            flow_generate.FLOW_URL,
+            True,
+            enable_cdp=True,
+        )
+
+    running, run_error = running_profiles(force_refresh=True)
+    if run_error:
+        raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
+    profile_dir = ccp.get_profile_dir(ARGS.profiles_dir, profile_id)
+    if (running or {}).get(profile_id):
+        if not flow_generate.is_ready(profile_dir):
+            raise RuntimeError(
+                f"Profil '{profile_id}' terbuka tanpa CDP. Tutup profil itu, lalu buka dengan tombol Flow."
+            )
+        flow_generate.open_flow(profile_dir)
+        return 0
+    result = ccp.open_profile(
+        ARGS.chrome,
+        ARGS.profiles_dir,
+        profile_id,
+        flow_generate.FLOW_URL,
+        False,
+        enable_cdp=True,
+    )
+    if result == 0:
+        GENERATE_BRIDGE.revoke(profile_id)
+    return result
+
+
+@app.post("/api/profiles/<pid>/flow/open")
+def api_open_flow(pid: str):
+    if not ccp.is_valid_profile_id(pid):
+        return err("ID profil tidak valid.")
+    if not ccp.get_profile_dir(ARGS.profiles_dir, pid).is_dir():
+        return err("Folder profil tidak ditemukan.", 404)
+    return _launch(Job(f"Buka Flow · {pid}", pid), _open_flow_profile, pid)
 
 
 def _generate_extension_job(job: GenerateJob, profile_id: str, prompt: str) -> int:
@@ -648,19 +737,260 @@ def _generate_extension_job(job: GenerateJob, profile_id: str, prompt: str) -> i
     return 0
 
 
+def _save_flow_generated_media(job: GenerateJob, source: Path) -> dict[str, Any]:
+    staging_prefix = f"{job.id}.flow-download"
+    resolved_source = source.resolve()
+    if (
+        resolved_source.parent != MEDIA_CACHE_DIR.resolve()
+        or not resolved_source.name.startswith(staging_prefix)
+        or not source.is_file()
+    ):
+        raise RuntimeError("Lokasi unduhan Flow tidak valid atau file tidak ditemukan.")
+    size_bytes = source.stat().st_size
+    if size_bytes <= 0 or size_bytes > MAX_MEDIA_BYTES:
+        raise RuntimeError("Ukuran media Flow tidak valid atau melebihi 500 MB.")
+    extension = source.suffix.lower()
+    image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
+    video_extensions = {".mp4", ".webm", ".mov", ".m4v"}
+    allowed_extensions = image_extensions if job.media_type == "image" else video_extensions
+    if extension not in allowed_extensions:
+        raise RuntimeError("Format media Flow tidak sesuai dengan jenis yang diminta.")
+    MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{job.id}{extension}"
+    shutil.copy2(source, MEDIA_CACHE_DIR / filename)
+    return {
+        "filename": filename,
+        "mime_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        "size_bytes": size_bytes,
+    }
+
+
+def _generate_flow_job(job: GenerateJob, profile_id: str, prompt: str) -> int:
+    if ARGS.dry_run:
+        raise RuntimeError("Mode uji tidak dapat membuka profil atau mengirim prompt ke Flow.")
+
+    profile_dir = ccp.get_profile_dir(ARGS.profiles_dir, profile_id)
+    running, run_error = running_profiles(force_refresh=True)
+    if run_error:
+        raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
+    if (running or {}).get(profile_id):
+        if not flow_generate.is_ready(profile_dir):
+            raise RuntimeError(
+                f"Profil '{profile_id}' terbuka tanpa CDP. Tutup profil itu, lalu buka dengan tombol Flow."
+            )
+    else:
+        job.write(f"Membuka profil Chrome '{profile_id}' ke Google Flow dengan CDP loopback...\n")
+        GENERATE_BRIDGE.revoke(profile_id)
+        result = ccp.open_profile(
+            ARGS.chrome,
+            ARGS.profiles_dir,
+            profile_id,
+            flow_generate.FLOW_URL,
+            False,
+            enable_cdp=True,
+        )
+        if result != 0:
+            raise RuntimeError(f"Gagal membuka profil Chrome '{profile_id}' untuk Flow.")
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if job.cancelled:
+                raise generate_bridge.GenerateBridgeCancelled()
+            running, run_error = running_profiles(force_refresh=True)
+            if run_error:
+                raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
+            if (running or {}).get(profile_id) and flow_generate.is_ready(profile_dir):
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError("Chrome Flow tidak menyiapkan endpoint CDP loopback.")
+
+    staging_path = MEDIA_CACHE_DIR / (
+        f"{job.id}.flow-download" if job.media_type == "image"
+        else f"{job.id}.flow-download.mp4"
+    )
+    if job.media_type == "image":
+        job.write(f"Menyiapkan gambar Google Flow: {job.flow_model}, 1 gambar...\n")
+    else:
+        job.write(
+            f"Menyiapkan Google Flow: {job.flow_model}, {job.flow_resolution}, "
+            f"{job.flow_duration}, 1 video...\n"
+        )
+    _update_generation_record(job, "waiting_media")
+
+    def check_cancelled() -> None:
+        if job.cancelled:
+            raise generate_bridge.GenerateBridgeCancelled()
+
+    try:
+        if job.media_type == "image":
+            generate_image_args = (
+                profile_dir,
+                prompt,
+                job.ratio,
+                job.flow_model,
+                staging_path,
+                check_cancelled,
+                job.write,
+            )
+            if job.reference_image_path:
+                downloaded_path = flow_generate.generate_image(
+                    *generate_image_args,
+                    reference_image_path=job.reference_image_path,
+                )
+            elif job.reference_video_path:
+                downloaded_path = flow_generate.generate_image(
+                    *generate_image_args,
+                    reference_video_path=job.reference_video_path,
+                )
+            else:
+                downloaded_path = flow_generate.generate_image(*generate_image_args)
+        else:
+            generate_video_args = (
+                profile_dir,
+                prompt,
+                job.ratio,
+                job.flow_model,
+                job.flow_resolution,
+                job.flow_duration,
+                staging_path,
+                check_cancelled,
+                job.write,
+            )
+            if job.reference_video_path:
+                flow_generate.generate_video(
+                    *generate_video_args,
+                    reference_video_path=job.reference_video_path,
+                )
+            elif job.reference_image_path:
+                flow_generate.generate_video(
+                    *generate_video_args,
+                    reference_image_path=job.reference_image_path,
+                )
+            else:
+                flow_generate.generate_video(*generate_video_args)
+            downloaded_path = staging_path
+        check_cancelled()
+        media = _save_flow_generated_media(job, downloaded_path)
+        _update_generation_record(
+            job,
+            "complete",
+            filename=media["filename"],
+            mime_type=media["mime_type"],
+            size_bytes=media["size_bytes"],
+        )
+        job.write(f"Hasil Flow tersimpan: {MEDIA_CACHE_DIR / media['filename']}\n")
+        return 0
+    finally:
+        staging_path.unlink(missing_ok=True)
+        if "downloaded_path" in locals() and downloaded_path != staging_path:
+            downloaded_path.unlink(missing_ok=True)
+
+
+def _read_reference_image(upload) -> tuple[bytes, str]:
+    image_data = upload.read(MAX_REFERENCE_IMAGE_BYTES + 1)
+    if len(image_data) > MAX_REFERENCE_IMAGE_BYTES:
+        raise ValueError("Ukuran gambar referensi maksimal 20 MB.")
+    if image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+        extension = ".png"
+    elif image_data.startswith(b"\xff\xd8\xff"):
+        extension = ".jpg"
+    elif (
+        len(image_data) >= 12
+        and image_data[:4] == b"RIFF"
+        and image_data[8:12] == b"WEBP"
+    ):
+        extension = ".webp"
+    else:
+        raise ValueError("Format gambar referensi harus PNG, JPG, atau WEBP.")
+    return image_data, extension
+
+
+def _read_reference_video(upload) -> tuple[bytes, str]:
+    extension = Path(upload.filename or "").suffix.lower()
+    if extension not in {".mp4", ".webm", ".mov", ".m4v"}:
+        raise ValueError("Format video referensi harus MP4, WEBM, MOV, atau M4V.")
+    video_data = upload.read(MAX_REFERENCE_VIDEO_BYTES + 1)
+    if len(video_data) > MAX_REFERENCE_VIDEO_BYTES:
+        raise ValueError("Ukuran video referensi maksimal 100 MB.")
+    is_webm = video_data.startswith(b"\x1a\x45\xdf\xa3")
+    is_mp4_container = len(video_data) >= 12 and video_data[4:8] == b"ftyp"
+    if (extension == ".webm" and not is_webm) or (
+        extension != ".webm" and not is_mp4_container
+    ):
+        raise ValueError("Isi video referensi tidak cocok dengan format file.")
+    return video_data, extension
+
+
+def _read_reference_media(upload) -> tuple[str, bytes, str]:
+    extension = Path(upload.filename or "").suffix.lower()
+    if extension in {".png", ".jpg", ".jpeg", ".webp"}:
+        data, detected_extension = _read_reference_image(upload)
+        return "image", data, detected_extension
+    if extension in {".mp4", ".webm", ".mov", ".m4v"}:
+        data, detected_extension = _read_reference_video(upload)
+        return "video", data, detected_extension
+    raise ValueError("Format media referensi tidak didukung.")
+
+
 @app.post("/api/generate")
 def api_generate():
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
+    multipart = request.mimetype == "multipart/form-data"
+    data = request.form if multipart else request.get_json(silent=True)
+    if data is None or not hasattr(data, "get"):
         return err("Format permintaan tidak valid.")
+    reference_media_file = request.files.get("reference_media") if multipart else None
+    reference_file = request.files.get("reference_image") if multipart else None
+    reference_video_file = request.files.get("reference_video") if multipart else None
+    uploads = [
+        upload for upload in (reference_media_file, reference_file, reference_video_file)
+        if upload and upload.filename
+    ]
+    if len(uploads) > 1:
+        return err("Pilih satu media referensi saja.")
+    reference_upload = uploads[0] if uploads else None
+    if reference_media_file and not reference_media_file.filename:
+        reference_media_file = None
+    if reference_file and not reference_file.filename:
+        reference_file = None
+    if reference_video_file and not reference_video_file.filename:
+        reference_video_file = None
     pid, prompt = data.get("profile_id"), data.get("prompt")
+    provider = data.get("provider", "gemini")
     media_type, ratio = data.get("media_type", "video"), data.get("ratio", "9:16")
-    if not isinstance(pid, str) or not isinstance(prompt, str):
+    default_flow_model = "Nano Banana 2.1" if media_type == "image" else "Omni 1.1 Flash"
+    flow_model = data.get("flow_model", default_flow_model)
+    flow_resolution = data.get("flow_resolution", "720p")
+    flow_duration = data.get("flow_duration", "10 dtk")
+    if not isinstance(pid, str) or not isinstance(prompt, str) or not isinstance(provider, str):
         return err("ID profil dan prompt harus berupa teks.")
+    if provider not in ("gemini", "flow"):
+        return err("Provider harus Gemini atau Flow.")
     if media_type not in ("video", "image"):
         return err("Jenis media harus video atau image.")
-    if ratio not in ("9:16", "16:9"):
-        return err("Rasio harus 9:16 atau 16:9.")
+    if reference_upload and provider != "flow":
+        if reference_video_file:
+            return err("Video referensi hanya didukung oleh Google Flow.")
+        if reference_file:
+            return err("Gambar referensi hanya didukung oleh Google Flow.")
+        return err("Media referensi hanya didukung oleh Google Flow.")
+    if provider == "flow":
+        supported_models = (
+            flow_generate.FLOW_IMAGE_MODELS if media_type == "image"
+            else flow_generate.FLOW_MODELS
+        )
+        if flow_model not in supported_models:
+            return err("Model Flow tidak didukung.")
+    supported_ratios = (
+        flow_generate.FLOW_IMAGE_RATIOS if provider == "flow" and media_type == "image"
+        else ("9:16", "16:9")
+    )
+    if ratio not in supported_ratios:
+        return err("Rasio tidak didukung untuk provider dan jenis media ini.")
+    if provider == "flow" and media_type == "video":
+        if flow_resolution not in ("360p", "720p"):
+            return err("Resolusi Flow harus 360p atau 720p.")
+        if flow_duration not in ("4 dtk", "6 dtk", "8 dtk", "10 dtk"):
+            return err("Durasi Flow tidak didukung.")
     pid, prompt = pid.strip(), prompt.strip()
     if not ccp.is_valid_profile_id(pid):
         return err("ID profil tidak valid.")
@@ -671,16 +1001,73 @@ def api_generate():
     profile_dir = ccp.get_profile_dir(ARGS.profiles_dir, pid)
     if not profile_dir.is_dir():
         return err("Folder profil tidak ditemukan.", 404)
-    job = GenerateJob(pid, media_type, ratio)
-    _create_generation_record(job, prompt)
+    reference_kind = ""
+    reference_data = None
+    reference_extension = ""
+    if reference_upload:
+        try:
+            if reference_media_file:
+                reference_kind, reference_data, reference_extension = _read_reference_media(
+                    reference_media_file
+                )
+            elif reference_file:
+                reference_kind = "image"
+                reference_data, reference_extension = _read_reference_image(reference_file)
+            else:
+                reference_kind = "video"
+                reference_data, reference_extension = _read_reference_video(
+                    reference_video_file
+                )
+        except ValueError as exc:
+            return err(str(exc))
+    job = GenerateJob(
+        pid,
+        media_type,
+        ratio,
+        provider,
+        flow_model=flow_model,
+        flow_resolution=flow_resolution,
+        flow_duration=flow_duration,
+    )
+    if reference_data and reference_kind == "image":
+        MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        job.reference_image_path = MEDIA_CACHE_DIR / f"{job.id}.flow-reference{reference_extension}"
+        try:
+            job.reference_image_path.write_bytes(reference_data)
+        except OSError as exc:
+            job.reference_image_path.unlink(missing_ok=True)
+            return err(f"Gagal menyimpan media referensi: {exc}", 500)
+    if reference_data and reference_kind == "video":
+        MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        job.reference_video_path = (
+            MEDIA_CACHE_DIR / f"{job.id}.flow-reference{reference_extension}"
+        )
+        try:
+            job.reference_video_path.write_bytes(reference_data)
+        except OSError as exc:
+            job.reference_video_path.unlink(missing_ok=True)
+            if job.reference_image_path:
+                job.reference_image_path.unlink(missing_ok=True)
+            return err(f"Gagal menyimpan media referensi: {exc}", 500)
+    try:
+        _create_generation_record(job, prompt)
+    except Exception:
+        for reference_path in (job.reference_image_path, job.reference_video_path):
+            if reference_path:
+                reference_path.unlink(missing_ok=True)
+        raise
+    generate_job = _generate_flow_job if provider == "flow" else _generate_extension_job
     response = _launch(
         job,
-        _generate_extension_job,
+        generate_job,
         job,
         pid,
         prompt,
     )
     if response.status_code != 200:
+        for reference_path in (job.reference_image_path, job.reference_video_path):
+            if reference_path:
+                reference_path.unlink(missing_ok=True)
         with closing(_history_connection()) as connection:
             connection.execute("DELETE FROM generations WHERE job_id=?", (job.id,))
             connection.commit()
@@ -691,7 +1078,7 @@ def api_generate():
 def api_history():
     with closing(_history_connection()) as connection:
         rows = connection.execute(
-            """SELECT job_id, created_at, profile_id, chat_id, media_type, ratio,
+            """SELECT job_id, created_at, profile_id, chat_id, provider, media_type, ratio,
                       prompt, status, error, filename, mime_type, size_bytes
                FROM generations ORDER BY created_at DESC, rowid DESC"""
         ).fetchall()
@@ -700,6 +1087,7 @@ def api_history():
         "created_at": row["created_at"],
         "profile_id": row["profile_id"],
         "chat_id": row["chat_id"],
+        "provider": row["provider"],
         "media_type": row["media_type"],
         "ratio": row["ratio"],
         "prompt": row["prompt"],
@@ -753,9 +1141,27 @@ def _close_profile_job(profile_id: str) -> int:
     return result
 
 
+def _clear_profile_job(profile_id: str) -> int:
+    result = ccp.clear_profile(ARGS.profiles_dir, profile_id, ARGS.dry_run)
+    if result == 0 and not ARGS.dry_run:
+        GENERATE_BRIDGE.revoke(profile_id)
+    return result
+
+
 @app.post("/api/profiles/<pid>/close")
 def api_close(pid: str):
     return _launch(Job(f"Tutup profil {pid}", pid), _close_profile_job, pid)
+
+
+@app.post("/api/profiles/<pid>/clear")
+def api_clear_profile(pid: str):
+    try:
+        profile_dir = ccp.get_profile_dir(ARGS.profiles_dir, pid)
+    except ValueError as exc:
+        return err(str(exc))
+    if not profile_dir.is_dir():
+        return err(f"Folder profil '{pid}' tidak ditemukan.", 404)
+    return _launch(Job(f"Clear data profil {pid}", pid), _clear_profile_job, pid)
 
 
 def _creds(data: dict) -> tuple:
@@ -896,7 +1302,7 @@ def api_bridge_send():
 
 def main() -> int:
     global ARGS
-    parser = argparse.ArgumentParser(description="AMB Mode server (Chrome profiles + Gemini Generate extension).")
+    parser = argparse.ArgumentParser(description="AMB Mode server (Chrome profiles + Gemini and Flow video generation).")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--profiles-dir", type=Path, default=ccp.DEFAULT_PROFILES_DIR)
     parser.add_argument("--chrome", type=Path, default=None, help="Lokasi chrome.exe jika tidak terdeteksi.")

@@ -26,17 +26,20 @@ python .\create_chrome_profile.py
 
 Menu options: `1` creates a profile, `2` lists managed profiles and shows whether Chrome is open, `3` opens a selected profile, `4` lists only open managed profiles to close, and `5` deletes one selected profile or all profiles with `A`. Login status is checked from the Gemini page when Grab starts. Deletion requires `y/n` confirmation; open profiles are skipped and must be closed from menu `4` first. Detection matches Chrome's exact `--user-data-dir` path against folders in the script's profile directory, so unrelated Chrome windows are not included. After opening Chrome, the script reports success and returns to the menu automatically. Choose `Enter` for Gemini, `2` for a blank tab, or enter another URL.
 
+On the dashboard's **Profil Chrome** page, each profile also has a **Clear** action. It removes browser data for that profile (including cookies, login sessions, history, and site data) while keeping the profile entry, installed extensions, and their configuration. Chrome must be closed first; sign in again after clearing.
+
 Menu option `6` opens the Grab submenu. It can reuse a selected profile, create a new profile and start Grab, list profile/browser status, or delete profiles. Grab asks for email and password in the terminal before launching Chrome; if the selected profile is already logged in, those values are not submitted. A successful login remains in the Chrome profile when Grab closes the browser; it is not exported to the application or logs.
 
-## Generate Video lewat extension baru
+## Generate Gambar dan Video lewat Gemini atau Flow
 
 1. Jalankan server UI menggunakan langkah di `CARA-INSTALL-DAN-JALANKAN.txt`.
-2. Jalankan Grab pada setiap profil target. Setelah pendaftaran/login Gemini selesai, Grab mengaktifkan Developer mode dari `chrome://extensions` lalu kembali ke Gemini. Kemudian pilih **Load unpacked** dan folder `gemini-generate-video-extension/`. Extension cukup dimuat satu kali per profil dan tidak memerlukan popup atau pengaturan.
-3. Buka profil melalui tombol **Buka** di AMB. Extension dipasangkan otomatis lewat halaman lokal sementara, lalu profil diarahkan ke Gemini.
-4. Login manual dan pilih mode Video/Veo di Gemini jika akun menampilkannya sebagai mode terpisah.
-5. Pilih profil pada tab **Generate Video**. Jika profil tertutup, Generate akan membukanya melalui AMB, menunggu extension tersambung, lalu mengirim prompt otomatis. Setiap permintaan memakai chat Gemini baru; setelah media selesai, tombol Download Gemini digunakan untuk menyimpan file ke `media-cache/`. Hasil, ID chat, dan prompt tampil di menu **History**.
+2. Pada tab **Generate**, pilih jenis media **Gambar** atau **Video**, lalu provider **Gemini** atau **Google Flow**.
+3. Untuk Gemini, pasang extension `gemini-generate-video-extension/` pada profil target seperti biasa, lalu buka profil memakai **Buka**. Extension dipasangkan otomatis; jika Gemini menampilkan pilihan Video/Veo, pilih secara manual.
+4. Untuk Flow, buka profil memakai tombol **Flow**. Chrome dibuka dengan CDP yang hanya bind ke `127.0.0.1`; profil yang sudah terbuka tanpa CDP perlu ditutup dan dibuka ulang dengan tombol tersebut.
+5. Flow Video default ke **Omni 1.1 Flash**, 720p, 10 detik. Model, resolusi, durasi, dan rasio dapat dipilih; jumlah video selalu dikunci ke 1x oleh CDP. Flow Gambar memakai **Nano Banana 2.1** secara default, menyediakan model Nano Banana Pro / Nano Banana 2 Lite / Nano Banana 2.1 dan rasio 16:9, 4:3, 1:1, 3:4, atau 9:16; jumlah gambar selalu dikunci ke 1x oleh CDP. Pada kedua mode Flow, tombol **+** menerima gambar PNG/JPG/WEBP (maksimal 20 MB) atau video MP4/WEBM/MOV/M4V (maksimal 100 MB) sebagai media referensi. Setelan menentukan jenis output; AMB mengunggah media lalu memverifikasi ID Flow yang sama terpasang ke kotak perintah sebelum generate. Jika Flow menampilkan dialog hak penggunaan saat upload referensi, AMB memilih **Saya setuju** sesuai instruksi pengguna. Untuk kedua mode, AMB mematikan dan memverifikasi Agen sebelum mengisi prompt, lalu menerapkan setelan dan langsung menjalankan generate tanpa konfirmasi tambahan. Media hasil disimpan ke `media-cache/`.
+6. Hasil, provider, dan prompt tampil di menu **History**.
 
-Prompt diisi dan dikirim melalui UI Gemini. Status `prompt_sent` hanya memastikan tombol kirim diklik dan bukan bukti video selesai. Chrome dibuka tanpa remote debugging/CDP.
+Prompt diisi melalui UI provider terkait; status prompt terkirim bukan bukti video selesai. Alur Gemini memakai extension tanpa CDP. CDP hanya dipakai untuk provider Flow dan tetap terikat ke loopback.
 
 ## Extension Penghubung Prompt Gemini (legacy)
 

@@ -148,6 +148,8 @@ def open_profile(
     profile_id: str,
     url: Optional[str],
     dry_run: bool = False,
+    *,
+    enable_cdp: bool = False,
 ) -> int:
     try:
         profile_dir = get_profile_dir(profiles_dir, profile_id)
@@ -181,17 +183,31 @@ def open_profile(
         "--no-default-browser-check",
         "--new-window",
     ]
+    if enable_cdp:
+        command.extend([
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=0",
+        ])
     if url:
         command.append(url)
 
     print(f"Membuka profil: {profile_id}")
     print(f"Folder data: {profile_dir}")
     print("Jangan buka ID profil yang sama di dua proses Chrome sekaligus.")
+    if enable_cdp:
+        print("CDP aktif hanya pada loopback untuk integrasi Google Flow.")
 
     if dry_run:
         print("Mode uji: Chrome tidak dibuka.")
         print("Perintah:", subprocess.list2cmdline(command))
         return 0
+
+    if enable_cdp:
+        try:
+            (profile_dir / "DevToolsActivePort").unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"Gagal membersihkan status CDP lama untuk profil '{profile_id}': {exc}", file=sys.stderr)
+            return 1
 
     try:
         subprocess.Popen(command, cwd=str(chrome_executable.parent))
@@ -200,7 +216,10 @@ def open_profile(
         return 1
 
     print(f"PROFIL '{profile_id}' BERHASIL DIBUKA.")
-    print("Masuk ke Gemini secara manual jika ini pertama kali.")
+    if enable_cdp:
+        print("Masuk ke Google Flow secara manual jika ini pertama kali.")
+    else:
+        print("Masuk ke Gemini secara manual jika ini pertama kali.")
     return 0
 
 
@@ -305,6 +324,81 @@ def close_profile(profiles_dir: Path, profile_id: str, dry_run: bool = False) ->
         return 1
 
     print(f"Chrome untuk profil '{profile_id}' berhasil ditutup.")
+    return 0
+
+
+def clear_profile(profiles_dir: Path, profile_id: str, dry_run: bool = False) -> int:
+    try:
+        profile_dir = get_profile_dir(profiles_dir, profile_id)
+        running_profiles = find_running_profile_processes(profiles_dir)
+    except (ValueError, OSError, json.JSONDecodeError, subprocess.TimeoutExpired) as exc:
+        print(f"Gagal memeriksa profil Chrome '{profile_id}': {exc}", file=sys.stderr)
+        return 1
+
+    if not profile_dir.is_dir():
+        print(f"Folder profil '{profile_id}' tidak ditemukan.", file=sys.stderr)
+        return 1
+    if profile_id in running_profiles:
+        print(
+            f"Profil '{profile_id}' masih terbuka. Tutup Chrome sebelum membersihkan data.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if dry_run:
+        print(f"Mode uji: data browser profil '{profile_id}' akan dibersihkan; ekstensi dipertahankan.")
+        return 0
+
+    try:
+        default_dir = profile_dir / "Default"
+        preserved_default_names = {
+            "Extensions",
+            "Extension Cookies",
+            "Extension Rules",
+            "Extension Scripts",
+            "Extension State",
+            "Local Extension Settings",
+            "Preferences",
+            "Secure Preferences",
+            "Sync Extension Settings",
+        }
+        for path in profile_dir.iterdir():
+            if path.name == "Local State" and path.is_file() and not path.is_symlink():
+                continue
+            if path == default_dir and path.is_dir() and not path.is_symlink():
+                for default_path in default_dir.iterdir():
+                    if default_path.name in preserved_default_names:
+                        continue
+                    if (
+                        default_path.name == "IndexedDB"
+                        and default_path.is_dir()
+                        and not default_path.is_symlink()
+                    ):
+                        for database in default_path.iterdir():
+                            if database.name.startswith("chrome-extension_"):
+                                continue
+                            if database.is_dir() and not database.is_symlink():
+                                shutil.rmtree(database)
+                            else:
+                                database.unlink()
+                        if not any(default_path.iterdir()):
+                            default_path.rmdir()
+                        continue
+                    if default_path.is_dir() and not default_path.is_symlink():
+                        shutil.rmtree(default_path)
+                    else:
+                        default_path.unlink()
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    except OSError as exc:
+        print(f"Gagal membersihkan data profil '{profile_id}': {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Data Chrome profil '{profile_id}' berhasil dibersihkan.")
+    print("Cookie, sesi login, riwayat, dan data situs telah dihapus; ekstensi tetap terpasang.")
     return 0
 
 
