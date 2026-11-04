@@ -169,6 +169,7 @@
   <form id="dlgForm" method="dialog">
     <h2 id="dlgTitle"></h2>
     <div id="dlgNew"><label for="dId">ID profil baru</label><input id="dId" autocomplete="off"></div>
+    <label class="grab-option" id="dlgGrabOption" for="dGrab"><input id="dGrab" type="checkbox" checked> Grab setelah membuat profil</label>
     <div id="dlgCred">
       <label for="dEmail">Email Google</label><input id="dEmail" type="email" autocomplete="off">
       <label for="dPass">Password Google</label><input id="dPass" type="password" autocomplete="off">
@@ -246,7 +247,7 @@ async function tick(){
       $("#pOk").textContent=p.enter_only?"Selesai, tutup Chrome":"Kirim";if(!p.enter_only)i.focus();
     }
     if(!p)$("#prompt").dataset.t="";
-    const live=j.status==="running"||j.status==="waiting";
+    const live=j.status==="queued"||j.status==="running"||j.status==="waiting";
     $("#cancel").disabled=!live;
     if(live){timer=setTimeout(tick,700)}else{
       const finishLabel=j.status==="done"?(j.title.startsWith("Generate ")?"hasil tersimpan":"selesai"):"gagal";
@@ -311,7 +312,7 @@ function renderHistoryCards(container,items){
     }else{
       const placeholder=document.createElement("div");
       placeholder.className="history-placeholder";
-      placeholder.textContent=item.status==="running"?"Sedang diproses…":item.status==="waiting_media"?"Prompt terkirim; menunggu hasil dan unduhan…":item.error||"Hasil belum tersedia.";
+      placeholder.textContent=item.status==="queued"?"Menunggu giliran…":item.status==="running"?"Sedang diproses…":item.status==="waiting_media"?"Prompt terkirim; menunggu hasil dan unduhan…":item.error||"Hasil belum tersedia.";
       preview.append(placeholder);
     }
 
@@ -326,7 +327,7 @@ function renderHistoryCards(container,items){
         item.ratio,
       `Profil ${item.profile_id}`,
       Number.isNaN(created.getTime())?"":created.toLocaleString(),
-      item.status==="complete"?"Selesai":item.status==="waiting_media"?"Menunggu hasil":item.status==="running"?"Berjalan":"Gagal",
+      item.status==="complete"?"Selesai":item.status==="waiting_media"?"Menunggu hasil":item.status==="queued"?"Antrean":item.status==="running"?"Berjalan":"Gagal",
     ].filter(Boolean).join(" · ");
     const prompt=document.createElement("p");
     prompt.className="history-prompt";
@@ -422,23 +423,19 @@ function renderServerInfo(state){
 function renderGenerate(state){
   if(!state)return;
   const select=$("#generateProfile"),current=select.value;
-  const provider=$("#generateProvider").value;
   const profiles=state.profiles;
   const options=profiles.map(p=>{
-    const availability=provider==="flow"
-      ?p.busy?"sedang diproses":p.flow_cdp?"Flow CDP siap":p.pids.length?"Chrome perlu dibuka ulang dengan Flow":"Chrome tertutup"
-      :p.busy?"sedang diproses":p.extension_ready?"extension siap":p.pids.length?"Chrome terbuka":"Chrome tertutup";
+    const availability=p.busy&&!p.generate_busy
+      ?"sedang diproses":p.extension_ready?"extension siap":p.pids.length?"Chrome terbuka":"Chrome tertutup";
     const option=new Option(`${p.id} · ${availability}`,p.id);
-    option.disabled=p.busy||(provider==="flow"&&p.pids.length>0&&!p.flow_cdp);
+    option.disabled=p.busy&&!p.generate_busy;
     return option;
   });
   if(!options.length)options.push(new Option("Belum ada profil Chrome",""));
   select.replaceChildren(...options);
   if(profiles.some(p=>p.id===current))select.value=current;
   const selected=profiles.find(p=>p.id===select.value);
-  const unavailableFlowProfile=provider==="flow"&&selected&&selected.pids.length>0&&!selected.flow_cdp;
-  $("#generateSend").disabled=!selected||selected.busy||Boolean(job)||unavailableFlowProfile;
-  $("#generatePrompt").disabled=Boolean(job);
+  $("#generateSend").disabled=!selected||(selected.busy&&!selected.generate_busy);
 }
 function row(p){
   const active=p.pids.length>0;
@@ -475,40 +472,30 @@ function row(p){
   if(active){
     const extension=document.createElement("span");
     extension.className="sub";
-    extension.textContent=p.flow_cdp?"CDP Flow siap":p.extension_ready?"Extension AMB siap":p.pairing?"Memasangkan extension AMB...":"Extension AMB belum terhubung";
+    extension.textContent=p.extension_ready?"Extension AMB siap":p.pairing?"Memasangkan extension AMB...":"Extension AMB belum terhubung";
     copy.append(extension);
   }
   info.append(avatar,copy);
   const actions=document.createElement("div");
   actions.className="actions";
-  const hintId=`profile-action-hint-${p.id}`;
-  const add=(t,cls,blockedReason,fn)=>{
+  const add=(t,cls,blocked,fn)=>{
     const b=document.createElement("button");
     b.className="btn "+cls;
     b.textContent=t;
-    const reason=p.busy?"Profil sedang diproses.":blockedReason;
-    b.disabled=Boolean(reason);
-    if(reason){b.title=reason;b.setAttribute("aria-describedby",hintId)}
+    b.disabled=p.busy||blocked;
     b.onclick=fn;
     actions.append(b);
   };
-  add("Buka","",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{normal:true}));
-  add("Grab","main",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.":"",()=>dialog("grab",p.id));
-  add("Gemini","",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{}));
-  add("Flow","",active&&!p.flow_cdp?"Tutup Chrome lalu buka ulang dengan tombol Flow.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/flow/open`,{}));
-  add("Tutup","","",()=>run(`/profiles/${encodeURIComponent(p.id)}/close`,{}));
-  add("Clear","danger",active?"Tutup Chrome untuk membersihkan data profil.":"",()=>{
+  add("Buka","",active,()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{normal:true}));
+  add("Grab","main",active,()=>dialog("grab",p.id));
+  add("Gemini","",active,()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{}));
+  add("Flow","",false,()=>run(`/profiles/${encodeURIComponent(p.id)}/flow/open`,{}));
+  add("Tutup","",false,()=>run(`/profiles/${encodeURIComponent(p.id)}/close`,{}));
+  add("Clear","danger",active,()=>{
     const message=`Bersihkan data browser profil '${p.id}'? Sesi login, cookie, riwayat, dan data situs termasuk Google/Gemini akan dihapus. Ekstensi dan konfigurasinya tetap dipertahankan. Profil tetap ada, tetapi kamu perlu login lagi.`;
     if(confirm(message))run(`/profiles/${encodeURIComponent(p.id)}/clear`,{});
   });
-  add("Hapus","danger",active?"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, dan Hapus.":"",()=>confirm(`Hapus profil '${p.id}' beserta sesinya?`)&&run("/profiles/delete",{ids:[p.id]}));
-  if(active||p.busy){
-    const hint=document.createElement("span");
-    hint.className="action-hint";
-    hint.id=hintId;
-    hint.textContent=p.busy?"Aksi profil dinonaktifkan selama proses berjalan.":"Tutup Chrome untuk mengaktifkan Grab, Gemini, Buka, Clear, dan Hapus.";
-    actions.append(hint);
-  }
+  add("Hapus","danger",active,()=>confirm(`Hapus profil '${p.id}' beserta sesinya?`)&&run("/profiles/delete",{ids:[p.id]}));
   card.append(info,actions);
   return card;
 }
@@ -542,21 +529,44 @@ async function refresh(){
 
 /* ---- dialog (profil baru / grab) */
 let dlgMode=null,dlgId=null;
+function updateDialogFields(){
+  const grab=dlgMode!=="new"||$("#dGrab").checked;
+  $("#dlgCred").classList.toggle("hidden",!grab);
+  $("#dEmail").required=grab;
+  $("#dPass").required=grab;
+  $("#dlgTitle").textContent=dlgMode==="new"
+    ?grab?"Profil baru + Grab":"Profil baru"
+    :`Grab: ${dlgId}`;
+}
 function dialog(mode,id){
   dlgMode=mode;dlgId=id;$("#dErr").textContent="";
-  $("#dlgTitle").textContent=mode==="new"?"Profil baru + Grab":`Grab: ${id}`;
   $("#dlgNew").classList.toggle("hidden",mode!=="new");
-  $("#dlgForm").reset();$("#dlg").showModal();
+  $("#dlgGrabOption").classList.toggle("hidden",mode!=="new");
+  $("#dlgForm").reset();updateDialogFields();$("#dlg").showModal();
 }
 $("#newBtn").onclick=()=>dialog("new");
 $("#dCancel").onclick=()=>$("#dlg").close();
+$("#dGrab").onchange=()=>{
+  if(!$("#dGrab").checked)$("#dEmail").value=$("#dPass").value="";
+  updateDialogFields();
+};
 $("#dlgForm").onsubmit=async e=>{
   e.preventDefault();
-  const body={email:$("#dEmail").value,password:$("#dPass").value};
   try{
     let j;
-    if(dlgMode==="new"){body.id=$("#dId").value;j=await api("/profiles/new-grab","POST",body)}
-    else j=await api(`/profiles/${encodeURIComponent(dlgId)}/grab`,"POST",body);
+    if(dlgMode==="new"){
+      const body={id:$("#dId").value};
+      if($("#dGrab").checked){
+        body.email=$("#dEmail").value;
+        body.password=$("#dPass").value;
+        j=await api("/profiles/new-grab","POST",body);
+      }else j=await api("/profiles","POST",body);
+    }else{
+      j=await api(`/profiles/${encodeURIComponent(dlgId)}/grab`,"POST",{
+        email:$("#dEmail").value,
+        password:$("#dPass").value,
+      });
+    }
     $("#dlgForm").reset();$("#dlg").close();watch(j);
   }catch(x){$("#dErr").textContent=x.message}
 };
@@ -578,9 +588,6 @@ function updateGenerateControls(){
   const mediaType=$("#generateType").value;
   const image=mediaType==="image";
   const type=image?"Gambar":"Video";
-  $("#generateReferenceMedia").disabled=Boolean(job);
-  $("#generateReferencePick").disabled=Boolean(job);
-  $("#generateReferenceRemove").disabled=Boolean(job);
   const modelOptions=provider==="flow"&&image?FLOW_IMAGE_MODELS:FLOW_VIDEO_MODELS;
   const modelMode=`${provider}:${mediaType}`;
   if($("#flowModel").dataset.mode!==modelMode){
@@ -611,8 +618,8 @@ function updateGenerateControls(){
   $("#generateSend").textContent=`Generate ${type}`;
   $("#generateSettingsOpen").textContent=`Settings · ${provider==="flow"?"Google Flow":"Gemini"} · ${type}`;
   $("#flowNotice").textContent=image
-    ?"Flow Gambar: output selalu 1 gambar. Prompt diisi sebelum setelan diterapkan; Agen dipastikan nonaktif. Profil harus dibuka dengan CDP Flow."
-    :"Flow Video: output selalu 1 video. Prompt diisi sebelum setelan diterapkan; Agen dipastikan nonaktif. Profil harus dibuka dengan CDP Flow.";
+    ?"Flow Gambar: output selalu 1 gambar. Generate dijalankan melalui extension AMB; pastikan extension sudah dipasang dan profil terhubung."
+    :"Flow Video: output selalu 1 video. Generate dijalankan melalui extension AMB; pastikan extension sudah dipasang dan profil terhubung.";
   $("#flowNotice").hidden=provider!=="flow";
   ["#flowModel","#flowResolution","#flowDuration"].forEach(selector=>{
     const visible=provider==="flow"&&(selector==="#flowModel"||!image);

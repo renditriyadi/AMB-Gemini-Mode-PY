@@ -302,6 +302,13 @@ class GenerateBridge:
         check_cancelled: Callable[[], None],
         on_prompt_sent: Optional[Callable[[dict[str, Any]], None]],
         timeout: float,
+        provider: str,
+        flow_model: str,
+        flow_resolution: str,
+        flow_duration: str,
+        reference_url: str,
+        reference_name: str,
+        reference_mime_type: str,
     ) -> dict[str, Any]:
         with self._lock:
             websocket = self._connections.get(profile_id)
@@ -314,14 +321,25 @@ class GenerateBridge:
         media_future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[request_id] = (profile_id, prompt_future, media_future)
         try:
-            await websocket.send(json.dumps({
+            message = {
                 "type": "generate_prompt",
                 "requestId": request_id,
                 "profileId": profile_id,
                 "prompt": prompt,
                 "mediaType": media_type,
                 "ratio": ratio,
-            }, ensure_ascii=False))
+                "provider": provider,
+            }
+            if provider == "flow":
+                message.update({
+                    "flowModel": flow_model,
+                    "flowResolution": flow_resolution,
+                    "flowDuration": flow_duration,
+                    "referenceUrl": reference_url,
+                    "referenceName": reference_name,
+                    "referenceMimeType": reference_mime_type,
+                })
+            await websocket.send(json.dumps(message, ensure_ascii=False))
             deadline = time.monotonic() + timeout
             while not prompt_future.done():
                 check_cancelled()
@@ -339,7 +357,9 @@ class GenerateBridge:
                 check_cancelled()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise GenerateBridgeError("Gemini belum menyelesaikan atau mengunduh hasil dalam batas waktu.")
+                    raise GenerateBridgeError(
+                        f"{provider.title()} belum menyelesaikan atau mengunduh hasil dalam batas waktu."
+                    )
                 await asyncio.wait({media_future}, timeout=min(remaining, 0.25))
             result = media_future.result()
             check_cancelled()
@@ -360,6 +380,14 @@ class GenerateBridge:
         ratio: str = "9:16",
         on_prompt_sent: Optional[Callable[[dict[str, Any]], None]] = None,
         timeout: float = 900,
+        *,
+        provider: str = "gemini",
+        flow_model: str = "",
+        flow_resolution: str = "",
+        flow_duration: str = "",
+        reference_url: str = "",
+        reference_name: str = "",
+        reference_mime_type: str = "",
     ) -> dict[str, Any]:
         if not valid_profile_id(profile_id):
             raise ValueError("ID profil tidak valid.")
@@ -367,9 +395,16 @@ class GenerateBridge:
             raise ValueError(f"Prompt wajib diisi dan maksimal {MAX_PROMPT_LENGTH} karakter.")
         if not self._loop or not self._loop.is_running():
             raise GenerateBridgeError("Generate extension bridge belum berjalan.")
+        if provider not in ("gemini", "flow"):
+            raise ValueError("Provider generate tidak valid.")
         if media_type not in ("video", "image"):
             raise ValueError("Jenis media tidak valid.")
-        if ratio not in ("9:16", "16:9"):
+        supported_ratios = (
+            ("16:9", "4:3", "1:1", "3:4", "9:16")
+            if provider == "flow" and media_type == "image"
+            else ("9:16", "16:9")
+        )
+        if ratio not in supported_ratios:
             raise ValueError("Rasio media tidak valid.")
         future = asyncio.run_coroutine_threadsafe(
             self._send_prompt(
@@ -380,6 +415,13 @@ class GenerateBridge:
                 check_cancelled,
                 on_prompt_sent,
                 timeout,
+                provider,
+                flow_model,
+                flow_resolution,
+                flow_duration,
+                reference_url,
+                reference_name,
+                reference_mime_type,
             ),
             self._loop,
         )
@@ -400,10 +442,11 @@ main{width:min(480px,calc(100% - 40px));padding:28px;border:1px solid #293941;bo
 h1{font-size:1.3rem;margin:0 0 8px}p{color:#aab8bf}button{padding:10px 16px;border:0;border-radius:8px;background:#42c7b5;color:#09201e;font-weight:700;cursor:pointer}
 #continue{display:none}
 </style>
-<main><h1>Menyiapkan profil AMB</h1><p id="status">Extension AMB sedang memasangkan profil ini. Halaman akan lanjut ke Gemini otomatis.</p>
-<button id="continue" type="button">Lanjut ke Gemini</button></main>
+<main><h1>Menyiapkan profil AMB</h1><p id="status">Extension AMB sedang memasangkan profil ini.</p>
+<button id="continue" type="button">Lanjut ke Google</button></main>
 <script>
 const button=document.querySelector("#continue");
-button.onclick=()=>location.replace("https://gemini.google.com/app");
+const target=new URLSearchParams(location.search).get("next")==="flow"?"https://flow.google.com/":"https://gemini.google.com/app";
+button.onclick=()=>location.replace(target);
 setTimeout(()=>{button.style.display="inline-block";document.querySelector("#status").textContent="Extension belum tersambung. Pastikan extension AMB sudah di-load pada profil ini, lalu coba buka ulang profil dari AMB.";},8000);
 </script></html>"""

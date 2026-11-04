@@ -1,6 +1,7 @@
 from contextlib import closing
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from io import BytesIO
@@ -570,217 +571,115 @@ class GenerateApiTests(unittest.TestCase):
     def test_generate_flow_downloads_and_records_video(self):
         job = server.GenerateJob("profile-one", "video", "16:9", "flow")
         server._create_generation_record(job, "A calm ocean at sunrise")
-
-        def fake_generate(
-            profile_dir,
-            prompt,
-            ratio,
-            model,
-            resolution,
-            duration,
-            download_path,
-            check_cancelled,
-            report,
-        ):
-            self.assertEqual(prompt, "A calm ocean at sunrise")
-            self.assertEqual(ratio, "16:9")
-            self.assertEqual(model, "Omni 1.1 Flash")
-            self.assertEqual(resolution, "720p")
-            self.assertEqual(duration, "10 dtk")
-            download_path.write_bytes(b"flow-video")
-            report("Flow menerima prompt. Biaya: 4 kredit.")
-
+        downloads_dir = self.profiles_dir / "Downloads"
+        downloads_dir.mkdir()
+        downloaded = downloads_dir / "flow-video.mp4"
+        downloaded.write_bytes(b"\x00\x00\x00\x18ftypisomflow")
         with (
-            patch("server.running_profiles", return_value=({"profile-one": [123]}, None)),
-            patch("server.flow_generate.is_ready", return_value=True),
-            patch("server.flow_generate.generate_video", side_effect=fake_generate),
+            patch("server._ensure_generate_extension_connected"),
+            patch("server.Path.home", return_value=self.profiles_dir),
+            patch("server.GENERATE_BRIDGE.send_prompt", return_value={
+                "status": "complete",
+                "download_path": str(downloaded),
+                "mime_type": "video/mp4",
+            }) as send_prompt,
         ):
             result = server._generate_flow_job(job, "profile-one", "A calm ocean at sunrise")
 
         self.assertEqual(result, 0)
+        send_prompt.assert_called_once()
+        self.assertEqual(send_prompt.call_args.kwargs["provider"], "flow")
+        self.assertEqual(send_prompt.call_args.kwargs["flow_model"], "Omni 1.1 Flash")
+        self.assertEqual(send_prompt.call_args.kwargs["flow_resolution"], "720p")
         media = server.MEDIA_CACHE_DIR / f"{job.id}.mp4"
-        self.assertEqual(media.read_bytes(), b"flow-video")
+        self.assertEqual(media.read_bytes(), downloaded.read_bytes())
         history = self.client.get("/api/history", headers=self.headers).get_json()
         self.assertEqual(history[0]["provider"], "flow")
         self.assertEqual(history[0]["status"], "complete")
-        self.assertEqual(history[0]["size_bytes"], len(b"flow-video"))
+        self.assertEqual(history[0]["size_bytes"], downloaded.stat().st_size)
 
     def test_generate_flow_downloads_and_records_image(self):
         job = server.GenerateJob("profile-one", "image", "1:1", "flow", flow_model="Nano Banana 2.1")
         server._create_generation_record(job, "A calm ocean at sunrise")
-
-        def fake_generate(profile_dir, prompt, ratio, model, download_path, check_cancelled, report):
-            self.assertEqual(prompt, "A calm ocean at sunrise")
-            self.assertEqual(ratio, "1:1")
-            self.assertEqual(model, "Nano Banana 2.1")
-            image_path = Path(f"{download_path}.png")
-            image_path.write_bytes(b"flow-image")
-            report("Flow menerima prompt gambar.")
-            return image_path
-
+        downloads_dir = self.profiles_dir / "Downloads"
+        downloads_dir.mkdir()
+        downloaded = downloads_dir / "flow-image.png"
+        downloaded.write_bytes(b"\x89PNG\r\n\x1a\nflow-image")
         with (
-            patch("server.running_profiles", return_value=({"profile-one": [123]}, None)),
-            patch("server.flow_generate.is_ready", return_value=True),
-            patch("server.flow_generate.generate_image", side_effect=fake_generate),
+            patch("server._ensure_generate_extension_connected"),
+            patch("server.Path.home", return_value=self.profiles_dir),
+            patch("server.GENERATE_BRIDGE.send_prompt", return_value={
+                "status": "complete",
+                "download_path": str(downloaded),
+                "mime_type": "image/png",
+            }) as send_prompt,
         ):
             result = server._generate_flow_job(job, "profile-one", "A calm ocean at sunrise")
 
         self.assertEqual(result, 0)
+        self.assertEqual(send_prompt.call_args.kwargs["provider"], "flow")
+        self.assertEqual(send_prompt.call_args.kwargs["flow_model"], "Nano Banana 2.1")
+        self.assertEqual(send_prompt.call_args.kwargs["ratio"], "1:1")
         media = server.MEDIA_CACHE_DIR / f"{job.id}.png"
-        self.assertEqual(media.read_bytes(), b"flow-image")
+        self.assertEqual(media.read_bytes(), downloaded.read_bytes())
         history = self.client.get("/api/history", headers=self.headers).get_json()
         self.assertEqual(history[0]["provider"], "flow")
         self.assertEqual(history[0]["media_type"], "image")
         self.assertEqual(history[0]["mime_type"], "image/png")
         self.assertEqual(history[0]["status"], "complete")
-        self.assertEqual(history[0]["size_bytes"], len(b"flow-image"))
+        self.assertEqual(history[0]["size_bytes"], downloaded.stat().st_size)
 
-    def test_generate_flow_passes_reference_image_to_image_generation(self):
+    def test_generate_flow_passes_reference_media_url_to_extension(self):
         job = server.GenerateJob("profile-one", "image", "1:1", "flow", flow_model="Nano Banana 2.1")
         reference_image = server.MEDIA_CACHE_DIR / f"{job.id}.flow-reference.png"
         reference_image.parent.mkdir(parents=True, exist_ok=True)
         reference_image.write_bytes(b"\x89PNG\r\n\x1a\nreference")
         job.reference_image_path = reference_image
         server._create_generation_record(job, "Transform the reference image")
-
-        def fake_generate(
-            profile_dir,
-            prompt,
-            ratio,
-            model,
-            download_path,
-            check_cancelled,
-            report,
-            *,
-            reference_image_path=None,
-        ):
-            self.assertEqual(prompt, "Transform the reference image")
-            self.assertEqual(reference_image_path, reference_image)
-            self.assertEqual(reference_image_path.read_bytes(), b"\x89PNG\r\n\x1a\nreference")
-            image_path = Path(f"{download_path}.png")
-            image_path.write_bytes(b"flow-image")
-            return image_path
-
+        downloads_dir = self.profiles_dir / "Downloads"
+        downloads_dir.mkdir()
+        downloaded = downloads_dir / "flow-image.png"
+        downloaded.write_bytes(b"\x89PNG\r\n\x1a\nflow-image")
         with (
-            patch("server.running_profiles", return_value=({"profile-one": [123]}, None)),
-            patch("server.flow_generate.is_ready", return_value=True),
-            patch("server.flow_generate.generate_image", side_effect=fake_generate) as generate,
+            patch("server._ensure_generate_extension_connected"),
+            patch("server.Path.home", return_value=self.profiles_dir),
+            patch("server.GENERATE_BRIDGE.send_prompt", return_value={
+                "status": "complete",
+                "download_path": str(downloaded),
+                "mime_type": "image/png",
+            }) as send_prompt,
         ):
             result = server._generate_flow_job(job, "profile-one", "Transform the reference image")
 
         self.assertEqual(result, 0)
-        self.assertEqual(generate.call_args.kwargs["reference_image_path"], reference_image)
+        self.assertEqual(send_prompt.call_args.kwargs["reference_name"], reference_image.name)
+        self.assertIn(f"/extension-media/{job.id}/", send_prompt.call_args.kwargs["reference_url"])
+        self.assertTrue(job.reference_token == "")
 
-    def test_generate_flow_passes_video_reference_to_image_generation(self):
-        job = server.GenerateJob("profile-one", "image", "1:1", "flow", flow_model="Nano Banana 2.1")
-        reference_video = server.MEDIA_CACHE_DIR / f"{job.id}.flow-reference.mp4"
-        reference_video.parent.mkdir(parents=True, exist_ok=True)
-        reference_video.write_bytes(b"\x00\x00\x00\x18ftypisomreference")
-        job.reference_video_path = reference_video
-        server._create_generation_record(job, "Use this video to make an image")
-
-        def fake_generate(
-            profile_dir,
-            prompt,
-            ratio,
-            model,
-            download_path,
-            check_cancelled,
-            report,
-            reference_image_path=None,
-            *,
-            reference_video_path=None,
-        ):
-            self.assertEqual(prompt, "Use this video to make an image")
-            self.assertEqual(reference_video_path, reference_video)
-            image_path = Path(f"{download_path}.png")
-            image_path.write_bytes(b"flow-image")
-            return image_path
-
-        with (
-            patch("server.running_profiles", return_value=({"profile-one": [123]}, None)),
-            patch("server.flow_generate.is_ready", return_value=True),
-            patch("server.flow_generate.generate_image", side_effect=fake_generate) as generate,
-        ):
-            result = server._generate_flow_job(job, "profile-one", "Use this video to make an image")
-
-        self.assertEqual(result, 0)
-        self.assertEqual(generate.call_args.kwargs["reference_video_path"], reference_video)
-        reference_video.unlink()
-
-    def test_generate_flow_passes_reference_video_to_video_generation(self):
-        job = server.GenerateJob("profile-one", "video", "16:9", "flow")
-        reference_video = server.MEDIA_CACHE_DIR / f"{job.id}.flow-reference.mp4"
-        reference_video.parent.mkdir(parents=True, exist_ok=True)
-        reference_video.write_bytes(b"\x00\x00\x00\x18ftypisomreference")
-        job.reference_video_path = reference_video
-        server._create_generation_record(job, "Transform the reference video")
-
-        def fake_generate(
-            profile_dir,
-            prompt,
-            ratio,
-            model,
-            resolution,
-            duration,
-            download_path,
-            check_cancelled,
-            report,
-            *,
-            reference_video_path=None,
-        ):
-            self.assertEqual(prompt, "Transform the reference video")
-            self.assertEqual(reference_video_path, reference_video)
-            self.assertEqual(reference_video_path.read_bytes(), b"\x00\x00\x00\x18ftypisomreference")
-            download_path.write_bytes(b"\x00\x00\x00\x18ftypisomgenerated")
-
-        with (
-            patch("server.running_profiles", return_value=({"profile-one": [123]}, None)),
-            patch("server.flow_generate.is_ready", return_value=True),
-            patch("server.flow_generate.generate_video", side_effect=fake_generate) as generate,
-        ):
-            result = server._generate_flow_job(job, "profile-one", "Transform the reference video")
-
-        self.assertEqual(result, 0)
-        self.assertEqual(generate.call_args.kwargs["reference_video_path"], reference_video)
-        self.assertTrue(reference_video.is_file())
-
-    def test_generate_flow_passes_image_reference_to_video_generation(self):
-        job = server.GenerateJob("profile-one", "video", "16:9", "flow")
-        reference_image = server.MEDIA_CACHE_DIR / f"{job.id}.flow-reference.png"
-        reference_image.parent.mkdir(parents=True, exist_ok=True)
+    def test_extension_reference_media_requires_job_token(self):
+        job = server.GenerateJob("profile-one", "image", "1:1", "flow")
+        job.reference_token = "one-time-reference-token"
+        reference_image = self.profiles_dir / "reference.png"
         reference_image.write_bytes(b"\x89PNG\r\n\x1a\nreference")
         job.reference_image_path = reference_image
-        server._create_generation_record(job, "Use this image to make a video")
-
-        def fake_generate(
-            profile_dir,
-            prompt,
-            ratio,
-            model,
-            resolution,
-            duration,
-            download_path,
-            check_cancelled,
-            report,
-            *,
-            reference_image_path=None,
-            reference_video_path=None,
-        ):
-            self.assertEqual(prompt, "Use this image to make a video")
-            self.assertEqual(reference_image_path, reference_image)
-            download_path.write_bytes(b"\x00\x00\x00\x18ftypisomgenerated")
-
-        with (
-            patch("server.running_profiles", return_value=({"profile-one": [123]}, None)),
-            patch("server.flow_generate.is_ready", return_value=True),
-            patch("server.flow_generate.generate_video", side_effect=fake_generate) as generate,
-        ):
-            result = server._generate_flow_job(job, "profile-one", "Use this image to make a video")
-
-        self.assertEqual(result, 0)
-        self.assertEqual(generate.call_args.kwargs["reference_image_path"], reference_image)
-        reference_image.unlink()
+        server.JOBS[job.id] = job
+        try:
+            valid = self.client.get(
+                f"/extension-media/{job.id}/{job.reference_token}",
+                headers={"Host": "127.0.0.1:8000"},
+            )
+            invalid = self.client.get(
+                f"/extension-media/{job.id}/wrong-token",
+                headers={"Host": "127.0.0.1:8000"},
+            )
+            self.assertEqual(valid.status_code, 200)
+            self.assertEqual(valid.data, reference_image.read_bytes())
+            self.assertEqual(valid.headers["Access-Control-Allow-Origin"], "*")
+            self.assertEqual(invalid.status_code, 404)
+            valid.close()
+            invalid.close()
+        finally:
+            server.JOBS.pop(job.id, None)
 
     def test_generate_job_cleans_up_uploaded_reference_media(self):
         job = server.GenerateJob("profile-one", "video", "16:9", "flow")
@@ -804,7 +703,39 @@ class GenerateApiTests(unittest.TestCase):
         self.assertFalse(reference_image.exists())
         self.assertFalse(reference_video.exists())
 
-    def test_server_open_flow_starts_cdp_profile_job(self):
+    def test_generate_jobs_for_same_profile_are_queued_sequentially(self):
+        profile_id = f"queue-profile-{time.monotonic_ns()}"
+        first_started = threading.Event()
+        release_first = threading.Event()
+        execution_order = []
+
+        def first_job():
+            execution_order.append("first-start")
+            first_started.set()
+            release_first.wait(2)
+            execution_order.append("first-end")
+
+        first = server.GenerateJob(profile_id, "image", "16:9")
+        second = server.GenerateJob(profile_id, "image", "16:9")
+        server.start_job(first, first_job)
+        self.assertTrue(first_started.wait(2))
+        server.start_job(second, lambda: execution_order.append("second"))
+
+        self.assertEqual(second.status, "queued")
+        self.assertTrue(second.active)
+        with self.assertRaises(RuntimeError):
+            server.start_job(server.Job("Other action", profile_id), lambda: 0)
+
+        release_first.set()
+        deadline = time.monotonic() + 2
+        while (first.active or second.active) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertEqual(first.status, "done")
+        self.assertEqual(second.status, "done")
+        self.assertEqual(execution_order, ["first-start", "first-end", "second"])
+
+    def test_server_open_flow_starts_profile_job(self):
         with patch("server._launch", return_value=server.app.response_class(
             response='{"id":"open-flow-job"}',
             status=200,
@@ -820,11 +751,10 @@ class GenerateApiTests(unittest.TestCase):
         self.assertIs(launch.call_args.args[1], server._open_flow_profile)
         self.assertEqual(launch.call_args.args[2], "profile-one")
 
-    def test_open_flow_starts_chrome_with_cdp_when_profile_is_closed(self):
+    def test_open_flow_opens_profile_without_cdp(self):
         with (
-            patch("server.running_profiles", return_value=({}, None)),
+            patch("server.GENERATE_BRIDGE.status", return_value={"extension_ready": True}),
             patch("server.ccp.open_profile", return_value=0) as open_profile,
-            patch("server.GENERATE_BRIDGE.revoke") as revoke,
         ):
             result = server._open_flow_profile("profile-one")
 
@@ -835,17 +765,27 @@ class GenerateApiTests(unittest.TestCase):
             "profile-one",
             "https://flow.google.com/",
             False,
-            enable_cdp=True,
         )
-        revoke.assert_called_once_with("profile-one")
 
-    def test_open_flow_refuses_profile_open_without_cdp(self):
+    def test_open_flow_pairs_extension_and_routes_back_to_flow(self):
         with (
-            patch("server.running_profiles", return_value=({"profile-one": [123]}, None)),
-            patch("server.flow_generate.is_ready", return_value=False),
-            self.assertRaisesRegex(RuntimeError, "Tutup profil itu"),
+            patch("server.GENERATE_BRIDGE.status", return_value={"extension_ready": False}),
+            patch("server.GENERATE_BRIDGE.issue_pairing", return_value="pair-ticket"),
+            patch("server.ccp.open_profile", return_value=0) as open_profile,
         ):
-            server._open_flow_profile("profile-one")
+            result = server._open_flow_profile("profile-one")
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            open_profile.call_args.args,
+            (
+                None,
+                self.profiles_dir,
+                "profile-one",
+                "http://127.0.0.1:8000/pair?next=flow#pair-ticket",
+                False,
+            ),
+        )
 
     def test_media_download_is_copied_into_persistent_cache(self):
         downloads_dir = self.profiles_dir / "Downloads"

@@ -8,6 +8,7 @@ let reconnectDelay = 1000;
 let generation = 0;
 let pairingWaiter = null;
 let pendingGeminiDownload = null;
+const pendingFlowRequests = new Map();
 
 function isGeminiDirectMediaUrl(rawUrl) {
   try {
@@ -96,6 +97,67 @@ async function waitForReadyGeminiTab(tabId, timeoutMs = 30000) {
   throw new Error('Chat Gemini baru tidak siap. Refresh tab Gemini lalu coba lagi.');
 }
 
+async function findReadyFlowTab() {
+  const deadline = Date.now() + 20000;
+  let lastError;
+  let createdFlowTabId = null;
+  while (Date.now() < deadline) {
+    let tabs = await chrome.tabs.query({ url: 'https://flow.google.com/*' });
+    if (!tabs.length && !createdFlowTabId) {
+      const tab = await chrome.tabs.create({ url: 'https://flow.google.com/' });
+      createdFlowTabId = tab.id;
+    }
+    if (Number.isInteger(createdFlowTabId)) {
+      try {
+        const createdTab = await chrome.tabs.get(createdFlowTabId);
+        if (createdTab.url?.startsWith('https://accounts.google.com/')) {
+          throw new Error('Profil Chrome belum login ke akun Google untuk Google Flow.');
+        }
+        if (
+          createdTab.url?.startsWith('https://flow.google.com/')
+          && !tabs.some((tab) => tab.id === createdFlowTabId)
+        ) {
+          tabs.push(createdTab);
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('belum login')) throw error;
+      }
+    }
+    const candidates = tabs
+      .filter((tab) => Number.isInteger(tab.id) && tab.status === 'complete')
+      .sort((a, b) => Number(b.active) - Number(a.active));
+    for (const tab of candidates) {
+      try {
+        const readiness = await chrome.tabs.sendMessage(tab.id, { type: 'AMB_FLOW_CONTENT_READY' });
+        if (readiness?.ready === true) return tab;
+        lastError = new Error('Content script Google Flow tidak mengonfirmasi kesiapan.');
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  const detail = lastError instanceof Error ? ` (${lastError.message})` : '';
+  throw new Error(`Tab Google Flow belum siap menerima perintah extension${detail}`);
+}
+
+async function waitForReadyFlowTab(tabId, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.status === 'complete' && tab.url?.startsWith('https://flow.google.com/')) {
+        const readiness = await chrome.tabs.sendMessage(tabId, { type: 'AMB_FLOW_CONTENT_READY' });
+        if (readiness?.ready === true) return tab;
+      }
+    } catch {
+      // The content script is not ready until its document finishes loading.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw new Error('Google Flow belum siap. Refresh tab Flow lalu coba lagi.');
+}
+
 function isRequestedMediaDownload(item, mediaType, startedAfter, directUrl = '') {
   if (Date.parse(item.startTime || '') < startedAfter - 1500) return false;
   if (directUrl && (item.url === directUrl || item.finalUrl === directUrl)) return true;
@@ -109,8 +171,13 @@ function isRequestedMediaDownload(item, mediaType, startedAfter, directUrl = '')
   return mediaType === 'image' ? imageMatch : videoMatch;
 }
 
-async function waitForMediaDownload(mediaType, startedAfter, chatId) {
-  const deadline = Date.now() + 600000;
+async function waitForMediaDownload(
+  mediaType,
+  startedAfter,
+  chatId,
+  { timeoutMs = 600000, provider = 'Gemini', allowDirectFallback = true } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
   let directDownloadId = null;
   while (Date.now() < deadline) {
     const items = await chrome.downloads.search({
@@ -124,16 +191,16 @@ async function waitForMediaDownload(mediaType, startedAfter, chatId) {
         item,
         mediaType,
         startedAfter,
-        pendingGeminiDownload?.url || '',
+        allowDirectFallback ? pendingGeminiDownload?.url || '' : '',
       ));
     if (download?.state === 'complete') return download;
     if (download?.state === 'interrupted' && directDownloadId === null) {
-      if (!pendingGeminiDownload?.url) {
-        throw new Error(`Unduhan Gemini gagal: ${download.error || 'unduhan terhenti.'}`);
+      if (!allowDirectFallback || !pendingGeminiDownload?.url) {
+        throw new Error(`Unduhan ${provider} gagal: ${download.error || 'unduhan terhenti.'}`);
       }
     }
     if (download?.state === 'interrupted' && directDownloadId !== null) {
-      throw new Error(`Unduhan Gemini gagal: ${download.error || 'unduhan terhenti.'}`);
+      throw new Error(`Unduhan ${provider} gagal: ${download.error || 'unduhan terhenti.'}`);
     }
     if (
       directDownloadId === null
@@ -151,10 +218,85 @@ async function waitForMediaDownload(mediaType, startedAfter, chatId) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error(
-    pendingGeminiDownload?.url
-      ? 'URL unduh hasil Gemini terdeteksi, tetapi file belum berhasil diunduh setelah 10 menit.'
-      : 'URL unduh Gemini tidak terdeteksi dan file belum selesai diunduh setelah 10 menit.',
+    allowDirectFallback && pendingGeminiDownload?.url
+    ? `URL unduh hasil ${provider} terdeteksi, tetapi file belum berhasil diunduh setelah batas waktu.`
+    : `File hasil ${provider} belum selesai diunduh setelah batas waktu.`,
   );
+}
+
+async function processGenerateFlowPrompt(socket, message, profileId) {
+  const requestId = message.requestId;
+  const allowedModels = message.mediaType === 'image'
+    ? ['Nano Banana Pro', 'Nano Banana 2 Lite', 'Nano Banana 2.1']
+    : ['Omni 1.1 Flash', 'Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality'];
+  const allowedRatios = message.mediaType === 'image'
+    ? ['16:9', '4:3', '1:1', '3:4', '9:16']
+    : ['9:16', '16:9'];
+  let promptAccepted = false;
+  let flowState;
+  try {
+    if (
+      !['video', 'image'].includes(message.mediaType)
+      || !allowedRatios.includes(message.ratio)
+      || !allowedModels.includes(message.flowModel)
+      || typeof message.prompt !== 'string'
+      || !message.prompt.trim()
+      || message.prompt.length > MAX_PROMPT_LENGTH
+      || (message.mediaType === 'video' && !['360p', '720p'].includes(message.flowResolution))
+      || (message.mediaType === 'video' && !['4 dtk', '6 dtk', '8 dtk', '10 dtk'].includes(message.flowDuration))
+    ) {
+      throw new Error('Pengaturan generate Google Flow tidak valid.');
+    }
+
+    const tab = await findReadyFlowTab();
+    flowState = { socket, requestId, profileId, startedAfter: 0 };
+    pendingFlowRequests.set(requestId, flowState);
+    const result = await chrome.tabs.sendMessage(tab.id, {
+      type: 'GENERATE_FLOW',
+      requestId,
+      prompt: message.prompt,
+      mediaType: message.mediaType,
+      ratio: message.ratio,
+      model: message.flowModel,
+      resolution: message.flowResolution,
+      duration: message.flowDuration,
+      referenceUrl: message.referenceUrl || '',
+      referenceName: message.referenceName || '',
+      referenceMimeType: message.referenceMimeType || '',
+    });
+    if (result?.status !== 'download_started') {
+      throw new Error(result?.detail || 'Google Flow tidak menyelesaikan generate.');
+    }
+    if (!flowState.startedAfter) {
+      throw new Error('Extension Flow tidak mengonfirmasi bahwa prompt sudah dikirim.');
+    }
+    promptAccepted = true;
+    const download = await waitForMediaDownload(
+      message.mediaType,
+      flowState.downloadStartedAfter || flowState.startedAfter,
+      '',
+      { timeoutMs: 180000, provider: 'Google Flow', allowDirectFallback: false },
+    );
+    sendBridgeMessage(socket, {
+      type: 'media_result',
+      requestId,
+      profileId,
+      status: 'complete',
+      downloadPath: download.filename,
+      mimeType: download.mime || '',
+      detail: 'Hasil Google Flow selesai diunduh.',
+    });
+  } catch (error) {
+    sendBridgeMessage(socket, {
+      type: promptAccepted ? 'media_result' : 'command_result',
+      requestId,
+      profileId,
+      status: 'error',
+      detail: error instanceof Error ? error.message : 'Generate atau unduhan Google Flow gagal.',
+    });
+  } finally {
+    pendingFlowRequests.delete(requestId);
+  }
 }
 
 async function processGeneratePrompt(socket, message, profileId) {
@@ -356,6 +498,20 @@ async function connectToBridge(pairing = null) {
       });
       return;
     }
+    if (message.provider === 'flow') {
+      void processGenerateFlowPrompt(socket, message, stored.profileId);
+      return;
+    }
+    if (message.provider && message.provider !== 'gemini') {
+      sendBridgeMessage(socket, {
+        type: 'command_result',
+        requestId: message.requestId,
+        profileId: stored.profileId,
+        status: 'invalid_command',
+        detail: 'Provider generate tidak didukung extension.',
+      });
+      return;
+    }
     void processGeneratePrompt(socket, message, stored.profileId);
   });
 
@@ -383,6 +539,45 @@ async function connectToBridge(pairing = null) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'FLOW_GENERATE_ACCEPTED') {
+    const requestId = message.requestId;
+    const state = typeof requestId === 'string' ? pendingFlowRequests.get(requestId) : null;
+    if (
+      !state
+      || sender.tab?.url?.startsWith('https://flow.google.com/') !== true
+      || state.startedAfter
+    ) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    state.startedAfter = Date.now();
+    sendBridgeMessage(state.socket, {
+      type: 'command_result',
+      requestId,
+      profileId: state.profileId,
+      status: 'prompt_sent',
+      detail: message.detail || 'Google Flow menerima perintah generate.',
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.type === 'FLOW_DOWNLOAD_READY') {
+    const requestId = message.requestId;
+    const state = typeof requestId === 'string' ? pendingFlowRequests.get(requestId) : null;
+    if (
+      !state
+      || !state.startedAfter
+      || sender.tab?.url?.startsWith('https://flow.google.com/') !== true
+    ) {
+      sendResponse({ ok: false });
+      return false;
+    }
+    state.downloadStartedAfter = Date.now();
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (message?.type === 'PAIR_PROFILE') {
     let senderUrl;
     try {

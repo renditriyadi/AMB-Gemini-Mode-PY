@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AMB Gemini Generate Video",
-  "version": "1.3.1",
-  "description": "Menghubungkan AMB ke UI Gemini pada profil Chrome ini.",
+  "name": "AMB Gemini & Flow",
+  "version": "1.4.0",
+  "description": "Menghubungkan AMB ke Google Gemini dan Google Flow pada profil Chrome ini.",
   "permissions": [
     "storage",
     "tabs",
@@ -11,6 +11,7 @@
   ],
   "host_permissions": [
     "https://gemini.google.com/*",
+    "https://flow.google.com/*",
     "https://*.googleusercontent.com/*",
     "https://contribution.usercontent.google.com/*",
     "http://127.0.0.1/*",
@@ -27,6 +28,15 @@
       ],
       "js": [
         "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://flow.google.com/*"
+      ],
+      "js": [
+        "flow_content.js"
       ],
       "run_at": "document_idle"
     }

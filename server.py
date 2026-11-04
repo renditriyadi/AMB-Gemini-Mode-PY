@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from datetime import datetime, timezone
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, request, send_file, send_from_directory
 
 import create_chrome_profile as ccp
 import flow_generate
@@ -283,7 +283,7 @@ class Job:
 
     @property
     def active(self) -> bool:
-        return self.status in ("running", "waiting")
+        return self.status in ("queued", "running", "waiting")
 
     def view(self, since: int = 0) -> dict:
         return {
@@ -317,62 +317,111 @@ class GenerateJob(Job):
         self.flow_duration = flow_duration
         self.reference_image_path = reference_image_path
         self.reference_video_path = reference_video_path
+        self.reference_token = ""
         self.chat_id = ""
 
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
+GENERATE_QUEUES: dict[str, queue.Queue] = {}
+
+
+def _run_job(job: Job, fn: Callable[..., Any], args: tuple, kwargs: dict) -> None:
+    context_token = _current.set(job)
+    try:
+        if job.cancelled:
+            raise Cancelled()
+        if isinstance(job, GenerateJob):
+            _update_generation_record(job, "running")
+        result = fn(*args, **kwargs)
+        code = result if isinstance(result, int) else 0
+        job.finish(code)
+        if isinstance(job, GenerateJob) and code != 0:
+            _update_generation_record(
+                job,
+                "failed",
+                error=next((line for line in reversed(job.lines) if line.startswith("Info: ")), "Generate gagal."),
+                chat_id=job.chat_id,
+            )
+    except Cancelled:
+        job.write("Dibatalkan.\n")
+        job.finish(130)
+        if isinstance(job, GenerateJob):
+            _update_generation_record(job, "failed", error="Dibatalkan.", chat_id=job.chat_id)
+    except generate_bridge.GenerateBridgeCancelled:
+        job.write("Dibatalkan.\n")
+        job.finish(130)
+        if isinstance(job, GenerateJob):
+            _update_generation_record(job, "failed", error="Dibatalkan.", chat_id=job.chat_id)
+    except BaseException as exc:  # noqa: BLE001
+        job.write(f"Error: {type(exc).__name__}: {exc}\n")
+        job.finish(1)
+        if isinstance(job, GenerateJob):
+            _update_generation_record(
+                job,
+                "failed",
+                error=str(exc),
+                chat_id=job.chat_id,
+            )
+    finally:
+        if isinstance(job, GenerateJob):
+            for reference_path in (job.reference_image_path, job.reference_video_path):
+                if reference_path:
+                    reference_path.unlink(missing_ok=True)
+        _current.reset(context_token)
+
+
+def _run_generate_queue(profile_id: str, jobs: queue.Queue) -> None:
+    while True:
+        job, fn, args, kwargs = jobs.get()
+        job.status = "running"
+        _run_job(job, fn, args, kwargs)
+        jobs.task_done()
+        with JOBS_LOCK:
+            if jobs.empty():
+                GENERATE_QUEUES.pop(profile_id, None)
+                return
 
 
 def start_job(job: Job, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Job:
+    active_profile_jobs = []
     with JOBS_LOCK:
-        if job.profile and any(j.active and j.profile == job.profile for j in JOBS.values()):
+        if job.profile:
+            active_profile_jobs = [
+                existing for existing in JOBS.values()
+                if existing.active and existing.profile == job.profile
+            ]
+        if active_profile_jobs and (
+            not isinstance(job, GenerateJob)
+            or any(not isinstance(existing, GenerateJob) for existing in active_profile_jobs)
+        ):
             raise RuntimeError(f"Profil '{job.profile}' masih punya proses yang berjalan.")
         JOBS[job.id] = job
-        for old in sorted(JOBS.values(), key=lambda j: j.started)[:-30]:
+        for old in sorted(JOBS.values(), key=lambda existing: existing.started)[:-30]:
             if not old.active:
                 JOBS.pop(old.id, None)
 
-    def target() -> None:
-        _current.set(job)
-        try:
-            result = fn(*args, **kwargs)
-            code = result if isinstance(result, int) else 0
-            job.finish(code)
-            if isinstance(job, GenerateJob) and code != 0:
-                _update_generation_record(
-                    job,
-                    "failed",
-                    error=next((line for line in reversed(job.lines) if line.startswith("Info: ")), "Generate gagal."),
-                    chat_id=job.chat_id,
-                )
-        except Cancelled:
-            job.write("Dibatalkan.\n")
-            job.finish(130)
-            if isinstance(job, GenerateJob):
-                _update_generation_record(job, "failed", error="Dibatalkan.", chat_id=job.chat_id)
-        except generate_bridge.GenerateBridgeCancelled:
-            job.write("Dibatalkan.\n")
-            job.finish(130)
-            if isinstance(job, GenerateJob):
-                _update_generation_record(job, "failed", error="Dibatalkan.", chat_id=job.chat_id)
-        except BaseException as exc:  # noqa: BLE001
-            job.write(f"Error: {type(exc).__name__}: {exc}\n")
-            job.finish(1)
-            if isinstance(job, GenerateJob):
-                _update_generation_record(
-                    job,
-                    "failed",
-                    error=str(exc),
-                    chat_id=job.chat_id,
-                )
-        finally:
-            if isinstance(job, GenerateJob):
-                for reference_path in (job.reference_image_path, job.reference_video_path):
-                    if reference_path:
-                        reference_path.unlink(missing_ok=True)
-
-    threading.Thread(target=target, daemon=True).start()
+        if isinstance(job, GenerateJob):
+            jobs = GENERATE_QUEUES.get(job.profile)
+            start_worker = jobs is None
+            if jobs is None:
+                jobs = queue.Queue()
+                GENERATE_QUEUES[job.profile] = jobs
+            job.status = "queued"
+            _update_generation_record(job, "queued")
+            jobs.put((job, fn, args, kwargs))
+            if start_worker:
+                threading.Thread(
+                    target=_run_generate_queue,
+                    args=(job.profile, jobs),
+                    daemon=True,
+                ).start()
+        else:
+            threading.Thread(
+                target=_run_job,
+                args=(job, fn, args, kwargs),
+                daemon=True,
+            ).start()
     return job
 
 
@@ -495,6 +544,25 @@ def extension_pair_page():
     }
 
 
+@app.get("/extension-media/<job_id>/<token>")
+def extension_reference_media(job_id: str, token: str):
+    job = JOBS.get(job_id)
+    if (
+        not isinstance(job, GenerateJob)
+        or job.provider != "flow"
+        or not job.reference_token
+        or not secrets.compare_digest(job.reference_token, token)
+    ):
+        return err("Media referensi tidak ditemukan atau token tidak valid.", 404)
+    path = job.reference_image_path or job.reference_video_path
+    if not path or not path.is_file():
+        return err("File media referensi tidak ditemukan.", 404)
+    response = send_file(path, mimetype=mimetypes.guess_type(path.name)[0])
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 _run_cache: dict[str, Any] = {"at": 0.0, "value": None, "error": None}
 
 
@@ -548,7 +616,10 @@ def state():
     profiles = [
         {"id": p.name, "pids": (running or {}).get(p.name, []),
          "busy": any(j.active and j.profile == p.name for j in JOBS.values()),
-         "flow_cdp": bool((running or {}).get(p.name)) and flow_generate.is_ready(p),
+         "generate_busy": any(
+             isinstance(j, GenerateJob) and j.active and j.profile == p.name
+             for j in JOBS.values()
+         ),
          **GENERATE_BRIDGE.status(p.name),
          "email": _profile_email(p)}
         for p in ccp.list_profiles(ARGS.profiles_dir)
@@ -609,6 +680,11 @@ def api_open(pid: str):
     )
 
 
+def _flow_pairing_url(profile_id: str) -> str:
+    ticket = GENERATE_BRIDGE.issue_pairing(profile_id)
+    return f"http://127.0.0.1:{ARGS.port}/pair?next=flow#{ticket}"
+
+
 def _open_flow_profile(profile_id: str) -> int:
     if ARGS.dry_run:
         return ccp.open_profile(
@@ -617,31 +693,19 @@ def _open_flow_profile(profile_id: str) -> int:
             profile_id,
             flow_generate.FLOW_URL,
             True,
-            enable_cdp=True,
         )
-
-    running, run_error = running_profiles(force_refresh=True)
-    if run_error:
-        raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
-    profile_dir = ccp.get_profile_dir(ARGS.profiles_dir, profile_id)
-    if (running or {}).get(profile_id):
-        if not flow_generate.is_ready(profile_dir):
-            raise RuntimeError(
-                f"Profil '{profile_id}' terbuka tanpa CDP. Tutup profil itu, lalu buka dengan tombol Flow."
-            )
-        flow_generate.open_flow(profile_dir)
-        return 0
-    result = ccp.open_profile(
+    target_url = (
+        flow_generate.FLOW_URL
+        if GENERATE_BRIDGE.status(profile_id)["extension_ready"]
+        else _flow_pairing_url(profile_id)
+    )
+    return ccp.open_profile(
         ARGS.chrome,
         ARGS.profiles_dir,
         profile_id,
-        flow_generate.FLOW_URL,
+        target_url,
         False,
-        enable_cdp=True,
     )
-    if result == 0:
-        GENERATE_BRIDGE.revoke(profile_id)
-    return result
 
 
 @app.post("/api/profiles/<pid>/flow/open")
@@ -651,6 +715,51 @@ def api_open_flow(pid: str):
     if not ccp.get_profile_dir(ARGS.profiles_dir, pid).is_dir():
         return err("Folder profil tidak ditemukan.", 404)
     return _launch(Job(f"Buka Flow · {pid}", pid), _open_flow_profile, pid)
+
+
+def _ensure_generate_extension_connected(
+    job: GenerateJob,
+    profile_id: str,
+    *,
+    flow: bool = False,
+) -> None:
+    def check_cancelled() -> None:
+        if job.cancelled:
+            raise generate_bridge.GenerateBridgeCancelled()
+
+    if GENERATE_BRIDGE.status(profile_id)["extension_ready"]:
+        return
+    running, run_error = running_profiles(force_refresh=True)
+    if run_error:
+        raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
+    if not (running or {}).get(profile_id):
+        check_cancelled()
+        ticket = GENERATE_BRIDGE.issue_pairing(profile_id)
+        next_page = "?next=flow" if flow else ""
+        pairing_url = f"http://127.0.0.1:{ARGS.port}/pair{next_page}#{ticket}"
+        job.write(f"Membuka profil Chrome '{profile_id}'...\n")
+        result = ccp.open_profile(
+            ARGS.chrome,
+            ARGS.profiles_dir,
+            profile_id,
+            pairing_url,
+            ARGS.dry_run,
+        )
+        if result != 0:
+            raise RuntimeError(f"Gagal membuka profil Chrome '{profile_id}'.")
+    else:
+        job.write(f"Menunggu extension terhubung pada profil '{profile_id}'...\n")
+
+    deadline = time.monotonic() + EXTENSION_CONNECT_TIMEOUT
+    while time.monotonic() < deadline:
+        check_cancelled()
+        if GENERATE_BRIDGE.status(profile_id)["extension_ready"]:
+            return
+        time.sleep(0.25)
+    raise RuntimeError(
+        f"Extension pada profil '{profile_id}' belum terhubung. "
+        "Pastikan extension AMB sudah dipasang pada profil tersebut."
+    )
 
 
 def _generate_extension_job(job: GenerateJob, profile_id: str, prompt: str) -> int:
@@ -673,38 +782,7 @@ def _generate_extension_job(job: GenerateJob, profile_id: str, prompt: str) -> i
     if ARGS.dry_run:
         raise RuntimeError("Mode uji tidak dapat membuka profil atau mengirim prompt ke Gemini.")
 
-    if not GENERATE_BRIDGE.status(profile_id)["extension_ready"]:
-        running, run_error = running_profiles(force_refresh=True)
-        if run_error:
-            raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
-        if not (running or {}).get(profile_id):
-            check_cancelled()
-            ticket = GENERATE_BRIDGE.issue_pairing(profile_id)
-            pairing_url = f"http://127.0.0.1:{ARGS.port}/pair#{ticket}"
-            job.write(f"Membuka profil Chrome '{profile_id}'...\n")
-            result = ccp.open_profile(
-                ARGS.chrome,
-                ARGS.profiles_dir,
-                profile_id,
-                pairing_url,
-                ARGS.dry_run,
-            )
-            if result != 0:
-                raise RuntimeError(f"Gagal membuka profil Chrome '{profile_id}'.")
-        else:
-            job.write(f"Menunggu extension terhubung pada profil '{profile_id}'...\n")
-
-        deadline = time.monotonic() + EXTENSION_CONNECT_TIMEOUT
-        while time.monotonic() < deadline:
-            check_cancelled()
-            if GENERATE_BRIDGE.status(profile_id)["extension_ready"]:
-                break
-            time.sleep(0.25)
-        else:
-            raise RuntimeError(
-                f"Extension pada profil '{profile_id}' belum terhubung. "
-                "Pastikan extension AMB sudah dipasang pada profil tersebut."
-            )
+    _ensure_generate_extension_connected(job, profile_id)
 
     check_cancelled()
     result = GENERATE_BRIDGE.send_prompt(
@@ -739,77 +817,10 @@ def _generate_extension_job(job: GenerateJob, profile_id: str, prompt: str) -> i
     return 0
 
 
-def _save_flow_generated_media(job: GenerateJob, source: Path) -> dict[str, Any]:
-    staging_prefix = f"{job.id}.flow-download"
-    resolved_source = source.resolve()
-    if (
-        resolved_source.parent != MEDIA_CACHE_DIR.resolve()
-        or not resolved_source.name.startswith(staging_prefix)
-        or not source.is_file()
-    ):
-        raise RuntimeError("Lokasi unduhan Flow tidak valid atau file tidak ditemukan.")
-    size_bytes = source.stat().st_size
-    if size_bytes <= 0 or size_bytes > MAX_MEDIA_BYTES:
-        raise RuntimeError("Ukuran media Flow tidak valid atau melebihi 500 MB.")
-    extension = source.suffix.lower()
-    image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}
-    video_extensions = {".mp4", ".webm", ".mov", ".m4v"}
-    allowed_extensions = image_extensions if job.media_type == "image" else video_extensions
-    if extension not in allowed_extensions:
-        raise RuntimeError("Format media Flow tidak sesuai dengan jenis yang diminta.")
-    MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    filename = f"{job.id}{extension}"
-    shutil.copy2(source, MEDIA_CACHE_DIR / filename)
-    return {
-        "filename": filename,
-        "mime_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
-        "size_bytes": size_bytes,
-    }
-
-
 def _generate_flow_job(job: GenerateJob, profile_id: str, prompt: str) -> int:
     if ARGS.dry_run:
         raise RuntimeError("Mode uji tidak dapat membuka profil atau mengirim prompt ke Flow.")
-
-    profile_dir = ccp.get_profile_dir(ARGS.profiles_dir, profile_id)
-    running, run_error = running_profiles(force_refresh=True)
-    if run_error:
-        raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
-    if (running or {}).get(profile_id):
-        if not flow_generate.is_ready(profile_dir):
-            raise RuntimeError(
-                f"Profil '{profile_id}' terbuka tanpa CDP. Tutup profil itu, lalu buka dengan tombol Flow."
-            )
-    else:
-        job.write(f"Membuka profil Chrome '{profile_id}' ke Google Flow dengan CDP loopback...\n")
-        GENERATE_BRIDGE.revoke(profile_id)
-        result = ccp.open_profile(
-            ARGS.chrome,
-            ARGS.profiles_dir,
-            profile_id,
-            flow_generate.FLOW_URL,
-            False,
-            enable_cdp=True,
-        )
-        if result != 0:
-            raise RuntimeError(f"Gagal membuka profil Chrome '{profile_id}' untuk Flow.")
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            if job.cancelled:
-                raise generate_bridge.GenerateBridgeCancelled()
-            running, run_error = running_profiles(force_refresh=True)
-            if run_error:
-                raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
-            if (running or {}).get(profile_id) and flow_generate.is_ready(profile_dir):
-                break
-            time.sleep(0.25)
-        else:
-            raise RuntimeError("Chrome Flow tidak menyiapkan endpoint CDP loopback.")
-
-    staging_path = MEDIA_CACHE_DIR / (
-        f"{job.id}.flow-download" if job.media_type == "image"
-        else f"{job.id}.flow-download.mp4"
-    )
+    _ensure_generate_extension_connected(job, profile_id, flow=True)
     if job.media_type == "image":
         job.write(f"Menyiapkan gambar Google Flow: {job.flow_model}, 1 gambar...\n")
     else:
@@ -817,75 +828,58 @@ def _generate_flow_job(job: GenerateJob, profile_id: str, prompt: str) -> int:
             f"Menyiapkan Google Flow: {job.flow_model}, {job.flow_resolution}, "
             f"{job.flow_duration}, 1 video...\n"
         )
-    _update_generation_record(job, "waiting_media")
 
     def check_cancelled() -> None:
         if job.cancelled:
             raise generate_bridge.GenerateBridgeCancelled()
 
+    def on_prompt_sent(result: dict[str, Any]) -> None:
+        job.write("Status extension Flow: prompt_sent\n")
+        if result.get("detail"):
+            job.write(f"Info: {result['detail']}\n")
+        job.write("Menunggu Google Flow menyelesaikan generate dan mengunduh media...\n")
+        _update_generation_record(job, "waiting_media")
+
+    job.reference_token = secrets.token_urlsafe(32)
+    reference_path = job.reference_image_path or job.reference_video_path
+    reference_url = (
+        f"http://127.0.0.1:{ARGS.port}/extension-media/{job.id}/{job.reference_token}"
+        if reference_path else ""
+    )
     try:
-        if job.media_type == "image":
-            generate_image_args = (
-                profile_dir,
-                prompt,
-                job.ratio,
-                job.flow_model,
-                staging_path,
-                check_cancelled,
-                job.write,
-            )
-            if job.reference_image_path:
-                downloaded_path = flow_generate.generate_image(
-                    *generate_image_args,
-                    reference_image_path=job.reference_image_path,
-                )
-            elif job.reference_video_path:
-                downloaded_path = flow_generate.generate_image(
-                    *generate_image_args,
-                    reference_video_path=job.reference_video_path,
-                )
-            else:
-                downloaded_path = flow_generate.generate_image(*generate_image_args)
-        else:
-            generate_video_args = (
-                profile_dir,
-                prompt,
-                job.ratio,
-                job.flow_model,
-                job.flow_resolution,
-                job.flow_duration,
-                staging_path,
-                check_cancelled,
-                job.write,
-            )
-            if job.reference_video_path:
-                flow_generate.generate_video(
-                    *generate_video_args,
-                    reference_video_path=job.reference_video_path,
-                )
-            elif job.reference_image_path:
-                flow_generate.generate_video(
-                    *generate_video_args,
-                    reference_image_path=job.reference_image_path,
-                )
-            else:
-                flow_generate.generate_video(*generate_video_args)
-            downloaded_path = staging_path
-        check_cancelled()
-        media = _save_flow_generated_media(job, downloaded_path)
-        _update_generation_record(
-            job,
-            "complete",
-            filename=media["filename"],
-            mime_type=media["mime_type"],
-            size_bytes=media["size_bytes"],
+        result = GENERATE_BRIDGE.send_prompt(
+            profile_id,
+            prompt,
+            check_cancelled,
+            media_type=job.media_type,
+            ratio=job.ratio,
+            on_prompt_sent=on_prompt_sent,
+            timeout=17 * 60,
+            provider="flow",
+            flow_model=job.flow_model,
+            flow_resolution=job.flow_resolution,
+            flow_duration=job.flow_duration,
+            reference_url=reference_url,
+            reference_name=reference_path.name if reference_path else "",
+            reference_mime_type=(
+                mimetypes.guess_type(reference_path.name)[0] if reference_path else ""
+            ) or "",
         )
-        job.write(f"Hasil Flow tersimpan: {MEDIA_CACHE_DIR / media['filename']}\n")
-        return 0
     finally:
-        staging_path.unlink(missing_ok=True)
-        if "downloaded_path" in locals() and downloaded_path != staging_path:
-            downloaded_path.unlink(missing_ok=True)
+        job.reference_token = ""
+    job.chat_id = result.get("chat_id", "")
+    if result.get("status") != "complete":
+        raise RuntimeError(result.get("detail") or "Generate Google Flow gagal.")
+    media = _save_generated_media(job, result)
+    _update_generation_record(
+        job,
+        "complete",
+        filename=media["filename"],
+        mime_type=media["mime_type"],
+        size_bytes=media["size_bytes"],
+    )
+    job.write(f"Hasil Flow tersimpan: {MEDIA_CACHE_DIR / media['filename']}\n")
+    return 0
 
 
 def _read_reference_image(upload) -> tuple[bytes, str]:

@@ -1,13 +1,13 @@
 # Python Mode Gemini Profile
 
-Folder ini berisi pengelolaan profil Chrome persisten dan dashboard AMB Mode. Generate Video memakai extension Chrome lokal baru pada UI Gemini, tanpa CDP, cookie yang diekspor, atau endpoint internal Gemini. Playwright masih digunakan oleh fitur Grab.
+Folder ini berisi pengelolaan profil Chrome persisten dan dashboard AMB Mode. Generate Gemini dan Google Flow memakai extension Chrome lokal pada UI provider, tanpa CDP, cookie yang diekspor, atau endpoint internal generate. Playwright masih digunakan oleh fitur Grab.
 
 ## Files
 
 - `create_chrome_profile.py` : opens installed Chrome with an isolated persistent profile
 - `PRD PYTHON GRAB LOGIN GEMINI PROFILE PERSISTEN.md` : rancangan otomasi login dengan sesi tersimpan di profil Chrome dan tidak diekspor ke Sheet/aplikasi
 - `gemini-prompt-bridge-extension/` : Chrome Manifest V3 extension untuk menerima prompt Python pada profil terpilih
-- `gemini-generate-video-extension/` : Chrome Manifest V3 extension baru untuk Generate Video tanpa pengaturan popup
+- `gemini-generate-video-extension/` : Chrome Manifest V3 extension untuk Generate Video Gemini dan Google Flow tanpa pengaturan popup
 - `gemini_generate_bridge.py` : pairing sekali pakai dan routing command extension pada loopback
 - `gemini_prompt_bridge.py` : bridge WebSocket yang hanya bind ke loopback `127.0.0.1`
 - `requirements-bridge.txt` : dependensi bridge lokal
@@ -15,6 +15,16 @@ Folder ini berisi pengelolaan profil Chrome persisten dan dashboard AMB Mode. Ge
 Grab memakai Playwright Python dengan Chrome lokal dan profil persisten yang dipilih. Dependensi Playwright dipasang di environment proyek; browser terpisah tidak perlu diunduh.
 
 Catatan: PRD direct-generate lama hanya disimpan sebagai arsip historis. Runner, JSON akun, dan cache runner tersebut sudah dihapus.
+
+## Membuat Ulang Paket ZIP
+
+Jalankan script berikut dari folder mana pun untuk membuat `AMB-Mode-V2.zip` di root proyek:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\build_amb_mode_v2.py
+```
+
+Paket berisi file aplikasi, UI, extension, dokumentasi penggunaan, dan script pembuat ZIP. Profil Chrome, cache media, environment lokal, test, serta runner lama di `scripts/` tidak disertakan.
 
 ## Dedicated Chrome Profile Test
 
@@ -35,11 +45,11 @@ Menu option `6` opens the Grab submenu. It can reuse a selected profile, create 
 1. Jalankan server UI menggunakan langkah di `CARA-INSTALL-DAN-JALANKAN.txt`.
 2. Pada tab **Generate**, pilih jenis media **Gambar** atau **Video**, lalu provider **Gemini** atau **Google Flow**.
 3. Untuk Gemini, pasang extension `gemini-generate-video-extension/` pada profil target seperti biasa, lalu buka profil memakai **Gemini**. Extension dipasangkan otomatis; jika Gemini menampilkan pilihan Video/Veo, pilih secara manual. Tombol **Buka** meluncurkan Chrome ke tab baru tanpa tujuan khusus.
-4. Untuk Flow, buka profil memakai tombol **Flow**. Chrome dibuka dengan CDP yang hanya bind ke `127.0.0.1`; profil yang sudah terbuka tanpa CDP perlu ditutup dan dibuka ulang dengan tombol tersebut.
-5. Flow Video default ke **Omni 1.1 Flash**, 720p, 10 detik. Model, resolusi, durasi, dan rasio dapat dipilih; jumlah video selalu dikunci ke 1x oleh CDP. Flow Gambar memakai **Nano Banana 2.1** secara default, menyediakan model Nano Banana Pro / Nano Banana 2 Lite / Nano Banana 2.1 dan rasio 16:9, 4:3, 1:1, 3:4, atau 9:16; jumlah gambar selalu dikunci ke 1x oleh CDP. Pada kedua mode Flow, tombol **+** menerima gambar PNG/JPG/WEBP (maksimal 20 MB) atau video MP4/WEBM/MOV/M4V (maksimal 100 MB) sebagai media referensi. Setelan menentukan jenis output; AMB mengunggah media lalu memverifikasi ID Flow yang sama terpasang ke kotak perintah sebelum generate. Jika Flow menampilkan dialog hak penggunaan saat upload referensi, AMB memilih **Saya setuju** sesuai instruksi pengguna. Untuk kedua mode, AMB mematikan dan memverifikasi Agen sebelum mengisi prompt, lalu menerapkan setelan dan langsung menjalankan generate tanpa konfirmasi tambahan. Media hasil disimpan ke `media-cache/`.
+4. Untuk Flow, pasang versi terbaru extension `gemini-generate-video-extension/` pada profil target dan buka profil memakai tombol **Flow**. Generate Flow dijalankan oleh extension melalui UI Google Flow dan Chrome dibuka normal tanpa CDP.
+5. Flow Video default ke **Omni 1.1 Flash**, 720p, 10 detik. Model, resolusi, durasi, dan rasio dapat dipilih. Flow Gambar memakai **Nano Banana 2.1** secara default dan menyediakan model Nano Banana Pro / Nano Banana 2 Lite / Nano Banana 2.1 serta rasio 16:9, 4:3, 1:1, 3:4, atau 9:16. Pada kedua mode Flow, tombol **+** menerima gambar PNG/JPG/WEBP (maksimal 20 MB) atau video MP4/WEBM/MOV/M4V (maksimal 100 MB) sebagai media referensi. Extension mengatur Flow, mematikan Agen, menjalankan generate, dan mengunduh hasil ke folder Downloads; AMB menyimpannya ke `media-cache/`.
 6. Hasil, provider, dan prompt tampil di menu **History**.
 
-Prompt diisi melalui UI provider terkait; status prompt terkirim bukan bukti video selesai. Alur Gemini memakai extension tanpa CDP. CDP hanya dipakai untuk provider Flow dan tetap terikat ke loopback.
+Prompt diisi melalui UI provider terkait; status prompt terkirim bukan bukti video selesai. Alur Gemini dan Flow memakai extension tanpa CDP.
 
 ## Extension Penghubung Prompt Gemini (legacy)
 

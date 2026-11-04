@@ -105,7 +105,7 @@
   function onPairPage() {
     if (!isPairPage()) return;
     const ticket = location.hash.slice(1);
-    history.replaceState(null, '', location.pathname);
+    history.replaceState(null, '', location.pathname + location.search);
     if (!ticket) return;
     chrome.runtime.sendMessage({ type: 'PAIR_PROFILE', ticket }, (result) => {
       if (chrome.runtime.lastError || !result?.ok) {
@@ -174,7 +174,10 @@
   if (isPairPage()) {
     onPairPage();
     chrome.runtime.onMessage.addListener((message) => {
-      if (message?.type === 'PAIR_COMPLETE') location.replace('https://gemini.google.com/app');
+      if (message?.type === 'PAIR_COMPLETE') {
+        const nextPage = new URLSearchParams(location.search).get('next');
+        location.replace(nextPage === 'flow' ? 'https://flow.google.com/' : 'https://gemini.google.com/app');
+      }
     });
   }
 

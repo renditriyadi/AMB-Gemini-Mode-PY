@@ -160,3 +160,5 @@ dialog::backdrop{background:var(--backdrop);backdrop-filter:blur(4px)}
 #recentList .history-actions .btn{font-size:.7rem;padding:.28rem .5rem}
 .cancel-row{margin-top:.6rem}
 .dialog-actions{justify-content:flex-end;margin-top:.8rem}
+.grab-option{display:flex;align-items:center;gap:.55rem;margin:.75rem 0 .4rem;color:var(--ink);font-size:.84rem}
+.grab-option input{width:auto;margin:0;accent-color:var(--accent)}
