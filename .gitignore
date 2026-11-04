@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.tmp
+*.key
+*.pem
+*.p12
+*.pfx
+
+ChromeProfiles/
+profiles/
