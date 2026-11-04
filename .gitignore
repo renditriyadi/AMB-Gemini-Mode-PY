@@ -12,6 +12,7 @@ __pycache__/
 *.pem
 *.p12
 *.pfx
+*.zip
 
 ChromeProfiles/
 profiles/
