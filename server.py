@@ -13,27 +13,143 @@ from __future__ import annotations
 import argparse
 import builtins
 import contextvars
+from contextlib import closing
 import getpass
+import mimetypes
 import queue
 import re
 import secrets
+import shutil
+import sqlite3
 import sys
 import threading
 import time
-import webbrowser
 import asyncio
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+from datetime import datetime, timezone
 
-from flask import Flask, abort, jsonify, request
+from flask import Flask, abort, jsonify, request, send_from_directory
 
 import create_chrome_profile as ccp
+import gemini_generate_bridge as generate_bridge
 
 HERE = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(24)
 MAX_PROMPT = 5000
+EXTENSION_CONNECT_TIMEOUT = 45
 PROFILE_EMAIL_FILE = "python-mode-email.txt"
+MEDIA_CACHE_DIR = HERE / "media-cache"
+HISTORY_DB_PATH = MEDIA_CACHE_DIR / "history.sqlite3"
+MAX_MEDIA_BYTES = 500 * 1024 * 1024
+GENERATE_BRIDGE = generate_bridge.GenerateBridge()
+
+
+def _history_connection() -> sqlite3.Connection:
+    MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(HISTORY_DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS generations (
+            job_id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            chat_id TEXT NOT NULL DEFAULT '',
+            media_type TEXT NOT NULL,
+            ratio TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            status TEXT NOT NULL,
+            error TEXT NOT NULL DEFAULT '',
+            filename TEXT NOT NULL DEFAULT '',
+            mime_type TEXT NOT NULL DEFAULT '',
+            size_bytes INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    connection.commit()
+    return connection
+
+
+def _create_generation_record(job: "GenerateJob", prompt: str) -> None:
+    with closing(_history_connection()) as connection:
+        connection.execute(
+            """INSERT INTO generations
+               (job_id, created_at, profile_id, media_type, ratio, prompt, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'running')""",
+            (
+                job.id,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                job.profile,
+                job.media_type,
+                job.ratio,
+                prompt,
+            ),
+        )
+        connection.commit()
+
+
+def _update_generation_record(
+    job: "GenerateJob",
+    status: str,
+    *,
+    error: str = "",
+    chat_id: str = "",
+    filename: str = "",
+    mime_type: str = "",
+    size_bytes: int = 0,
+) -> None:
+    with closing(_history_connection()) as connection:
+        cursor = connection.execute(
+            """UPDATE generations SET status=?, error=?, chat_id=?, filename=?,
+               mime_type=?, size_bytes=? WHERE job_id=?""",
+            (status, error, chat_id, filename, mime_type, size_bytes, job.id),
+        )
+        connection.commit()
+    if cursor.rowcount == 0 and filename:
+        if not re.fullmatch(rf"{job.id}\.[a-z0-9]{{2,5}}", filename):
+            app.logger.error("Invalid generated media filename for deleted history %s", job.id)
+            return
+        try:
+            (MEDIA_CACHE_DIR / filename).unlink(missing_ok=True)
+        except OSError:
+            app.logger.exception("Failed to remove generated media for deleted history %s", job.id)
+
+
+def _save_generated_media(job: "GenerateJob", result: dict[str, Any]) -> dict[str, Any]:
+    downloaded_path = result.get("download_path")
+    if not isinstance(downloaded_path, str) or not downloaded_path:
+        raise RuntimeError("Extension tidak memberikan lokasi file hasil unduhan Gemini.")
+    source = Path(downloaded_path).resolve()
+    downloads_dir = (Path.home() / "Downloads").resolve()
+    if not source.is_relative_to(downloads_dir):
+        raise RuntimeError("Lokasi unduhan di luar folder Downloads standar; file tidak dipindahkan.")
+    if not source.is_file():
+        raise RuntimeError("File hasil unduhan Gemini tidak ditemukan.")
+    size_bytes = source.stat().st_size
+    if size_bytes <= 0 or size_bytes > MAX_MEDIA_BYTES:
+        raise RuntimeError("Ukuran file hasil tidak valid atau melebihi 500 MB.")
+
+    extension = source.suffix.lower()
+    mime_type = result.get("mime_type") or mimetypes.guess_type(source.name)[0] or ""
+    if extension not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".mp4", ".webm", ".mov", ".m4v"}:
+        extension = mimetypes.guess_extension(mime_type) or ""
+    allowed_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif", ".mp4", ".webm", ".mov", ".m4v"}
+    if extension not in allowed_extensions:
+        raise RuntimeError("Format file hasil Gemini tidak didukung.")
+    if job.media_type == "image" and extension not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".avif"}:
+        raise RuntimeError("Gemini mengunduh format video, padahal jenis yang diminta adalah gambar.")
+    if job.media_type == "video" and extension not in {".mp4", ".webm", ".mov", ".m4v"}:
+        raise RuntimeError("Gemini mengunduh format gambar, padahal jenis yang diminta adalah video.")
+
+    MEDIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{job.id}{extension}"
+    destination = MEDIA_CACHE_DIR / filename
+    shutil.copy2(source, destination)
+    return {
+        "filename": filename,
+        "mime_type": mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        "size_bytes": size_bytes,
+    }
 
 # --------------------------------------------------------------------------
 # Pengalihan print / input / getpass per job (pakai contextvar, jadi ikut
@@ -165,6 +281,15 @@ class Job:
         }
 
 
+class GenerateJob(Job):
+    def __init__(self, profile_id: str, media_type: str, ratio: str) -> None:
+        label = "Gambar" if media_type == "image" else "Video"
+        super().__init__(f"Generate {label} · {profile_id}", profile_id)
+        self.media_type = media_type
+        self.ratio = ratio
+        self.chat_id = ""
+
+
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
 
@@ -182,13 +307,35 @@ def start_job(job: Job, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Jo
         _current.set(job)
         try:
             result = fn(*args, **kwargs)
-            job.finish(result if isinstance(result, int) else 0)
+            code = result if isinstance(result, int) else 0
+            job.finish(code)
+            if isinstance(job, GenerateJob) and code != 0:
+                _update_generation_record(
+                    job,
+                    "failed",
+                    error=next((line for line in reversed(job.lines) if line.startswith("Info: ")), "Generate gagal."),
+                    chat_id=job.chat_id,
+                )
         except Cancelled:
             job.write("Dibatalkan.\n")
             job.finish(130)
+            if isinstance(job, GenerateJob):
+                _update_generation_record(job, "failed", error="Dibatalkan.", chat_id=job.chat_id)
+        except generate_bridge.GenerateBridgeCancelled:
+            job.write("Dibatalkan.\n")
+            job.finish(130)
+            if isinstance(job, GenerateJob):
+                _update_generation_record(job, "failed", error="Dibatalkan.", chat_id=job.chat_id)
         except BaseException as exc:  # noqa: BLE001
             job.write(f"Error: {type(exc).__name__}: {exc}\n")
             job.finish(1)
+            if isinstance(job, GenerateJob):
+                _update_generation_record(
+                    job,
+                    "failed",
+                    error=str(exc),
+                    chat_id=job.chat_id,
+                )
 
     threading.Thread(target=target, daemon=True).start()
     return job
@@ -290,11 +437,25 @@ def index():
     return html.replace("__TOKEN__", TOKEN), 200, {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store"}
 
 
+@app.get("/style.css")
+def ui_stylesheet():
+    return send_from_directory(HERE / "ui", "style.css")
+
+
+@app.get("/pair")
+def extension_pair_page():
+    return generate_bridge.pair_page_html(), 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+    }
+
+
 _run_cache: dict[str, Any] = {"at": 0.0, "value": None, "error": None}
 
 
-def running_profiles() -> tuple[Optional[dict], Optional[str]]:
-    if time.time() - _run_cache["at"] > 3:
+def running_profiles(force_refresh: bool = False) -> tuple[Optional[dict], Optional[str]]:
+    if force_refresh or time.time() - _run_cache["at"] > 3:
         try:
             _run_cache.update(value=ccp.find_running_profile_processes(ARGS.profiles_dir), error=None)
         except Exception as exc:  # noqa: BLE001
@@ -343,6 +504,7 @@ def state():
     profiles = [
         {"id": p.name, "pids": (running or {}).get(p.name, []),
          "busy": any(j.active and j.profile == p.name for j in JOBS.values()),
+         **GENERATE_BRIDGE.status(p.name),
          "email": _profile_email(p)}
         for p in ccp.list_profiles(ARGS.profiles_dir)
     ]
@@ -381,15 +543,219 @@ def api_create():
 
 @app.post("/api/profiles/<pid>/open")
 def api_open(pid: str):
+    if not ccp.is_valid_profile_id(pid):
+        return err("ID profil tidak valid.")
     url = (request.get_json(silent=True) or {}).get("url", ccp.DEFAULT_URL) or None
     if url and not re.match(r"^https?://", url):
         return err("URL harus diawali http:// atau https://")
-    return _launch(Job(f"Buka profil {pid}", pid), ccp.open_profile, ARGS.chrome, ARGS.profiles_dir, pid, url, ARGS.dry_run)
+    if not ARGS.dry_run:
+        ticket = GENERATE_BRIDGE.issue_pairing(pid)
+        url = f"http://127.0.0.1:{ARGS.port}/pair#{ticket}"
+    return _launch(
+        Job(f"Buka profil {pid}", pid),
+        ccp.open_profile,
+        ARGS.chrome,
+        ARGS.profiles_dir,
+        pid,
+        url,
+        ARGS.dry_run,
+    )
+
+
+def _generate_extension_job(job: GenerateJob, profile_id: str, prompt: str) -> int:
+    def check_cancelled() -> None:
+        if job.cancelled:
+            raise generate_bridge.GenerateBridgeCancelled()
+
+    def on_prompt_sent(result: dict[str, Any]) -> None:
+        job.chat_id = result.get("chat_id", "")
+        job.write("Status extension: prompt_sent\n")
+        if result.get("detail"):
+            job.write(f"Info: {result['detail']}\n")
+        job.write("Menunggu hasil Gemini dan unduhan media...\n")
+        _update_generation_record(
+            job,
+            "waiting_media",
+            chat_id=job.chat_id,
+        )
+
+    if ARGS.dry_run:
+        raise RuntimeError("Mode uji tidak dapat membuka profil atau mengirim prompt ke Gemini.")
+
+    if not GENERATE_BRIDGE.status(profile_id)["extension_ready"]:
+        running, run_error = running_profiles(force_refresh=True)
+        if run_error:
+            raise RuntimeError(f"Status Chrome tidak bisa dibaca: {run_error}")
+        if not (running or {}).get(profile_id):
+            check_cancelled()
+            ticket = GENERATE_BRIDGE.issue_pairing(profile_id)
+            pairing_url = f"http://127.0.0.1:{ARGS.port}/pair#{ticket}"
+            job.write(f"Membuka profil Chrome '{profile_id}'...\n")
+            result = ccp.open_profile(
+                ARGS.chrome,
+                ARGS.profiles_dir,
+                profile_id,
+                pairing_url,
+                ARGS.dry_run,
+            )
+            if result != 0:
+                raise RuntimeError(f"Gagal membuka profil Chrome '{profile_id}'.")
+        else:
+            job.write(f"Menunggu extension terhubung pada profil '{profile_id}'...\n")
+
+        deadline = time.monotonic() + EXTENSION_CONNECT_TIMEOUT
+        while time.monotonic() < deadline:
+            check_cancelled()
+            if GENERATE_BRIDGE.status(profile_id)["extension_ready"]:
+                break
+            time.sleep(0.25)
+        else:
+            raise RuntimeError(
+                f"Extension pada profil '{profile_id}' belum terhubung. "
+                "Pastikan extension AMB sudah dipasang pada profil tersebut."
+            )
+
+    check_cancelled()
+    result = GENERATE_BRIDGE.send_prompt(
+        profile_id,
+        prompt,
+        check_cancelled,
+        media_type=job.media_type,
+        ratio=job.ratio,
+        on_prompt_sent=on_prompt_sent,
+        timeout=900,
+    )
+    detail = result.get("detail")
+    status = result.get("status", "unknown")
+    if status != "complete":
+        job.write(f"Status extension: {status}\n")
+        if detail:
+            job.write(f"Info: {detail}\n")
+    job.chat_id = result.get("chat_id", job.chat_id)
+    if status != "complete":
+        return 1
+
+    media = _save_generated_media(job, result)
+    _update_generation_record(
+        job,
+        "complete",
+        chat_id=job.chat_id,
+        filename=media["filename"],
+        mime_type=media["mime_type"],
+        size_bytes=media["size_bytes"],
+    )
+    job.write(f"Hasil tersimpan: {MEDIA_CACHE_DIR / media['filename']}\n")
+    return 0
+
+
+@app.post("/api/generate")
+def api_generate():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return err("Format permintaan tidak valid.")
+    pid, prompt = data.get("profile_id"), data.get("prompt")
+    media_type, ratio = data.get("media_type", "video"), data.get("ratio", "9:16")
+    if not isinstance(pid, str) or not isinstance(prompt, str):
+        return err("ID profil dan prompt harus berupa teks.")
+    if media_type not in ("video", "image"):
+        return err("Jenis media harus video atau image.")
+    if ratio not in ("9:16", "16:9"):
+        return err("Rasio harus 9:16 atau 16:9.")
+    pid, prompt = pid.strip(), prompt.strip()
+    if not ccp.is_valid_profile_id(pid):
+        return err("ID profil tidak valid.")
+    if not prompt:
+        return err("Prompt kosong.")
+    if len(prompt) > MAX_PROMPT:
+        return err(f"Prompt maksimal {MAX_PROMPT} karakter.")
+    profile_dir = ccp.get_profile_dir(ARGS.profiles_dir, pid)
+    if not profile_dir.is_dir():
+        return err("Folder profil tidak ditemukan.", 404)
+    job = GenerateJob(pid, media_type, ratio)
+    _create_generation_record(job, prompt)
+    response = _launch(
+        job,
+        _generate_extension_job,
+        job,
+        pid,
+        prompt,
+    )
+    if response.status_code != 200:
+        with closing(_history_connection()) as connection:
+            connection.execute("DELETE FROM generations WHERE job_id=?", (job.id,))
+            connection.commit()
+    return response
+
+
+@app.get("/api/history")
+def api_history():
+    with closing(_history_connection()) as connection:
+        rows = connection.execute(
+            """SELECT job_id, created_at, profile_id, chat_id, media_type, ratio,
+                      prompt, status, error, filename, mime_type, size_bytes
+               FROM generations ORDER BY created_at DESC, rowid DESC"""
+        ).fetchall()
+    return jsonify([{
+        "id": row["job_id"],
+        "created_at": row["created_at"],
+        "profile_id": row["profile_id"],
+        "chat_id": row["chat_id"],
+        "media_type": row["media_type"],
+        "ratio": row["ratio"],
+        "prompt": row["prompt"],
+        "status": row["status"],
+        "error": row["error"],
+        "media_url": f"/media/{row['filename']}" if row["filename"] else "",
+        "mime_type": row["mime_type"],
+        "size_bytes": row["size_bytes"],
+    } for row in rows])
+
+
+@app.delete("/api/history/<job_id>")
+def api_delete_history(job_id: str):
+    if not re.fullmatch(r"[a-f0-9]{10}", job_id):
+        return err("ID history tidak valid.", 404)
+
+    with closing(_history_connection()) as connection:
+        row = connection.execute(
+            "SELECT status, filename FROM generations WHERE job_id=?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return err("Hasil generate tidak ditemukan.", 404)
+        filename = row["filename"]
+        if filename:
+            if not re.fullmatch(rf"{job_id}\.[a-z0-9]{{2,5}}", filename):
+                return err("Nama file history tidak valid.", 500)
+            media_path = MEDIA_CACHE_DIR / filename
+            try:
+                media_path.unlink(missing_ok=True)
+            except OSError:
+                app.logger.exception("Failed to remove generated media for history %s", job_id)
+                return err("File media gagal dihapus. History tidak diubah.", 500)
+
+        connection.execute("DELETE FROM generations WHERE job_id=?", (job_id,))
+        connection.commit()
+    return jsonify({"ok": True})
+
+
+@app.get("/media/<path:filename>")
+def media_file(filename: str):
+    if Path(filename).name != filename or not re.fullmatch(r"[a-f0-9]{10}\.[a-z0-9]{2,5}", filename):
+        return err("Nama file media tidak valid.", 404)
+    return send_from_directory(MEDIA_CACHE_DIR, filename, conditional=True)
+
+
+def _close_profile_job(profile_id: str) -> int:
+    result = ccp.close_profile(ARGS.profiles_dir, profile_id, ARGS.dry_run)
+    if result == 0 and not ARGS.dry_run:
+        GENERATE_BRIDGE.revoke(profile_id)
+    return result
 
 
 @app.post("/api/profiles/<pid>/close")
 def api_close(pid: str):
-    return _launch(Job(f"Tutup profil {pid}", pid), ccp.close_profile, ARGS.profiles_dir, pid, ARGS.dry_run)
+    return _launch(Job(f"Tutup profil {pid}", pid), _close_profile_job, pid)
 
 
 def _creds(data: dict) -> tuple:
@@ -530,17 +896,19 @@ def api_bridge_send():
 
 def main() -> int:
     global ARGS
-    parser = argparse.ArgumentParser(description="UI server untuk Python Mode (Chrome profile + Gemini prompt bridge).")
+    parser = argparse.ArgumentParser(description="AMB Mode server (Chrome profiles + Gemini Generate extension).")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--profiles-dir", type=Path, default=ccp.DEFAULT_PROFILES_DIR)
     parser.add_argument("--chrome", type=Path, default=None, help="Lokasi chrome.exe jika tidak terdeteksi.")
     parser.add_argument("--dry-run", action="store_true", help="Aksi hanya disimulasikan (sama seperti --dry-run di CLI).")
-    parser.add_argument("--no-browser", action="store_true")
     ARGS = parser.parse_args()
     url = f"http://127.0.0.1:{ARGS.port}"
     print(f"Python Mode UI aktif hanya di komputer ini: {url}")
-    if not ARGS.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    try:
+        GENERATE_BRIDGE.start()
+        print(f"Generate extension bridge aktif hanya di komputer ini (127.0.0.1:{GENERATE_BRIDGE.port}).")
+    except RuntimeError as exc:
+        print(f"PERINGATAN: {exc} Generate Video via extension tidak tersedia.")
     app.run(host="127.0.0.1", port=ARGS.port, threaded=True, debug=False)
     return 0
 

@@ -1,12 +1,14 @@
 # Python Mode Gemini Profile
 
-Folder ini berisi pengelolaan profil Chrome persisten dan prototipe extension bridge Gemini lokal. Generate langsung menggunakan cookie/JSON tidak lagi dipakai.
+Folder ini berisi pengelolaan profil Chrome persisten dan dashboard AMB Mode. Generate Video memakai extension Chrome lokal baru pada UI Gemini, tanpa CDP, cookie yang diekspor, atau endpoint internal Gemini. Playwright masih digunakan oleh fitur Grab.
 
 ## Files
 
 - `create_chrome_profile.py` : opens installed Chrome with an isolated persistent profile
 - `PRD PYTHON GRAB LOGIN GEMINI PROFILE PERSISTEN.md` : rancangan otomasi login dengan sesi tersimpan di profil Chrome dan tidak diekspor ke Sheet/aplikasi
 - `gemini-prompt-bridge-extension/` : Chrome Manifest V3 extension untuk menerima prompt Python pada profil terpilih
+- `gemini-generate-video-extension/` : Chrome Manifest V3 extension baru untuk Generate Video tanpa pengaturan popup
+- `gemini_generate_bridge.py` : pairing sekali pakai dan routing command extension pada loopback
 - `gemini_prompt_bridge.py` : bridge WebSocket yang hanya bind ke loopback `127.0.0.1`
 - `requirements-bridge.txt` : dependensi bridge lokal
 
@@ -26,9 +28,19 @@ Menu options: `1` creates a profile, `2` lists managed profiles and shows whethe
 
 Menu option `6` opens the Grab submenu. It can reuse a selected profile, create a new profile and start Grab, list profile/browser status, or delete profiles. Grab asks for email and password in the terminal before launching Chrome; if the selected profile is already logged in, those values are not submitted. A successful login remains in the Chrome profile when Grab closes the browser; it is not exported to the application or logs.
 
-## Extension Penghubung Prompt Gemini
+## Generate Video lewat extension baru
 
-Prototipe ini mengirim prompt ke tab Gemini melalui extension yang dipasang pada profil Chrome tujuan. Extension tidak membaca cookie, token, password, atau penyimpanan browser. Bridge hanya menerima koneksi lokal di `127.0.0.1` dan melaporkan apakah prompt terkirim ke UI; bridge belum memastikan video selesai dibuat.
+1. Jalankan server UI menggunakan langkah di `CARA-INSTALL-DAN-JALANKAN.txt`.
+2. Jalankan Grab pada setiap profil target. Setelah pendaftaran/login Gemini selesai, Grab mengaktifkan Developer mode dari `chrome://extensions` lalu kembali ke Gemini. Kemudian pilih **Load unpacked** dan folder `gemini-generate-video-extension/`. Extension cukup dimuat satu kali per profil dan tidak memerlukan popup atau pengaturan.
+3. Buka profil melalui tombol **Buka** di AMB. Extension dipasangkan otomatis lewat halaman lokal sementara, lalu profil diarahkan ke Gemini.
+4. Login manual dan pilih mode Video/Veo di Gemini jika akun menampilkannya sebagai mode terpisah.
+5. Pilih profil pada tab **Generate Video**. Jika profil tertutup, Generate akan membukanya melalui AMB, menunggu extension tersambung, lalu mengirim prompt otomatis. Setiap permintaan memakai chat Gemini baru; setelah media selesai, tombol Download Gemini digunakan untuk menyimpan file ke `media-cache/`. Hasil, ID chat, dan prompt tampil di menu **History**.
+
+Prompt diisi dan dikirim melalui UI Gemini. Status `prompt_sent` hanya memastikan tombol kirim diklik dan bukan bukti video selesai. Chrome dibuka tanpa remote debugging/CDP.
+
+## Extension Penghubung Prompt Gemini (legacy)
+
+Extension dan bridge lama tetap tersedia sebagai alat terpisah, tetapi tidak digunakan oleh tab **Generate Video**.
 
 1. Pasang dependensi bridge pada `.venv` proyek:
 

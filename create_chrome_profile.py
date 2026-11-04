@@ -670,6 +670,33 @@ def _finish_gemini_onboarding(page: Any) -> bool:
     return _chat_ready(page)
 
 
+def _enable_extensions_developer_mode(page: Any) -> bool:
+    try:
+        page.goto("chrome://extensions/", wait_until="domcontentloaded", timeout=15000)
+        toggle = page.locator("extensions-manager extensions-toolbar #devMode")
+        toggle.wait_for(state="visible", timeout=10000)
+        if toggle.get_attribute("aria-checked") != "true":
+            toggle.click(timeout=5000)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if toggle.get_attribute("aria-checked") == "true":
+                    break
+                page.wait_for_timeout(100)
+        if toggle.get_attribute("aria-checked") != "true":
+            raise RuntimeError("Developer mode toggle tidak berubah ke posisi aktif.")
+        print("Developer mode extension berhasil diaktifkan.")
+        return True
+    except Exception as exc:
+        print(f"Gagal mengaktifkan Developer mode dari halaman Chrome: {exc}", file=sys.stderr)
+        return False
+    finally:
+        if not page.is_closed() and page.url.startswith("chrome://extensions"):
+            try:
+                page.goto(DEFAULT_URL, wait_until="domcontentloaded", timeout=15000)
+            except Exception as exc:
+                print(f"Developer mode diproses, tetapi Gemini gagal dibuka kembali: {exc}", file=sys.stderr)
+
+
 def grab_profile(
     profiles_dir: Path,
     profile_id: str,
@@ -783,6 +810,9 @@ def grab_profile(
                     return 1
                 print("Login berhasil. Gemini siap digunakan.")
 
+            if not _enable_extensions_developer_mode(page):
+                print("Login Gemini selesai, tetapi Developer mode belum aktif. Aktifkan manual lewat chrome://extensions.")
+                return 1
             input("Tekan Enter untuk menutup Chrome dan kembali ke menu. Sesi profil tetap tersimpan...")
             return 0
     except KeyboardInterrupt:

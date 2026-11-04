@@ -54,7 +54,7 @@ Dari folder proyek, jalankan:
 
     .\.venv\Scripts\python.exe .\server.py
 
-Halaman AMB Mode akan terbuka di browser. Jika tidak terbuka otomatis, akses:
+Server tidak membuka browser otomatis. Buka alamat berikut secara manual:
 
     http://127.0.0.1:8000
 
@@ -63,13 +63,12 @@ Ctrl+C di terminal untuk menghentikan server.
 
 Opsi server:
 - --port 8001       Menggunakan port lain
-- --no-browser      Tidak membuka browser otomatis
 - --dry-run         Menjalankan aksi dalam mode simulasi
 - --chrome PATH     Menentukan lokasi chrome.exe secara manual
 
 Contoh:
 
-    .\.venv\Scripts\python.exe .\server.py --no-browser --port 8001
+    .\.venv\Scripts\python.exe .\server.py --port 8001
 
 
 4. MENJALANKAN MODE CLI
@@ -93,17 +92,32 @@ Profil Chrome disimpan terpisah dari folder proyek, di:
 %LOCALAPPDATA%\AMB Media V5\ChromeProfiles
 
 
-5. PROMPT BRIDGE (OPSIONAL)
+5. PASANG EXTENSION GENERATE VIDEO
 ---------------------------
-Untuk menggunakan tab Prompt Bridge:
-1. Di Chrome pada profil yang dituju, buka chrome://extensions.
-2. Aktifkan Developer mode, pilih Load unpacked, lalu pilih folder
-   gemini-prompt-bridge-extension di dalam folder proyek.
-3. Jalankan server UI, buka tab Prompt Bridge, lalu tekan Jalankan.
-4. Masukkan alamat dan kunci lokal yang ditampilkan UI ke pengaturan extension.
-5. Biarkan tab Gemini terbuka pada profil target dan extension terhubung.
+1. Jalankan server UI seperti pada bagian 3.
+2. Jalankan Grab pada setiap profil target. Setelah pendaftaran/login Gemini
+   selesai, Grab membuka chrome://extensions dan mengaktifkan Developer mode,
+   lalu kembali ke Gemini.
+3. Buka chrome://extensions, pilih Load unpacked, lalu pilih folder
+   gemini-generate-video-extension di dalam folder proyek.
+   Popup extension tidak perlu dibuka atau diisi.
+4. Tutup profil tadi, lalu dari tab Profil Chrome AMB tekan Buka untuk profil
+   tersebut. Pairing dilakukan otomatis; halaman lokal singkat akan lanjut
+   ke Gemini setelah extension tersambung.
+5. Login ke Gemini secara manual dan pilih mode Video/Veo jika diperlukan.
+6. Buka tab Generate Video di AMB, pilih profil Chrome, tulis prompt, lalu
+   tekan Generate Video. Jika profil tertutup, AMB akan membukanya, menunggu
+   extension tersambung, lalu mengirim prompt otomatis.
+7. AMB membuat chat baru untuk setiap permintaan, menunggu hasil gambar/video,
+   lalu mengunduhnya melalui tombol Download Gemini. File dan metadata
+   tersimpan di folder media-cache dalam proyek dan tampil di menu History.
 
-Bridge hanya menerima koneksi lokal. Jangan membagikan kunci bridge.
+Generate Video memakai UI Gemini lewat extension pada koneksi lokal
+127.0.0.1. Chrome tidak dibuka dengan remote debugging/CDP. Extension lama
+Prompt Bridge tetap terpisah dan tidak digunakan oleh tab ini.
+
+Extension Prompt Bridge lama tetap tersedia terpisah, tetapi tidak digunakan
+oleh tab Generate Video.
 
 
 CATATAN
