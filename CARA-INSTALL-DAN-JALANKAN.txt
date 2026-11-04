@@ -1,0 +1,115 @@
+AMB MODE - CARA INSTALL DAN MENJALANKAN
+========================================
+
+Persyaratan
+-----------
+- Windows 10/11
+- Python 3.11 atau lebih baru
+- Google Chrome terpasang
+- Koneksi internet saat memasang paket Python
+
+
+1. INSTALL PYTHON
+-----------------
+Jika Python belum terpasang, unduh installer Windows dari:
+https://www.python.org/downloads/windows/
+
+Saat memasang, centang "Add python.exe to PATH". Setelah instalasi selesai,
+tutup lalu buka kembali PowerShell atau terminal VS Code.
+
+Periksa instalasi:
+
+    python --version
+
+Jika perintah "python" belum dikenali, coba:
+
+    py --version
+
+Jika keduanya belum dikenali, jalankan kembali installer Python dan pastikan
+Python ditambahkan ke PATH, lalu buka terminal baru.
+
+
+2. INSTALL DEPENDENSI PROYEK
+----------------------------
+Buka PowerShell pada folder proyek, yaitu folder yang berisi server.py.
+Buat virtual environment dan pasang semua paket:
+
+    python -m venv .venv
+    .\.venv\Scripts\python.exe -m pip install --upgrade pip
+    .\.venv\Scripts\python.exe -m pip install -r .\requirements-server.txt
+
+Virtual environment menyimpan paket proyek secara terpisah dari Python lain.
+Dependensi server mencakup Flask, WebSockets, dan Playwright. Proyek memakai
+Chrome yang sudah terpasang; browser Playwright terpisah tidak perlu diunduh.
+
+Jika perintah "python" belum dikenali tetapi "py" berfungsi, ganti baris
+pertama dengan:
+
+    py -m venv .venv
+
+
+3. MENJALANKAN SERVER UI
+------------------------
+Dari folder proyek, jalankan:
+
+    .\.venv\Scripts\python.exe .\server.py
+
+Halaman AMB Mode akan terbuka di browser. Jika tidak terbuka otomatis, akses:
+
+    http://127.0.0.1:8000
+
+Biarkan jendela terminal/server tetap berjalan selama UI digunakan. Tekan
+Ctrl+C di terminal untuk menghentikan server.
+
+Opsi server:
+- --port 8001       Menggunakan port lain
+- --no-browser      Tidak membuka browser otomatis
+- --dry-run         Menjalankan aksi dalam mode simulasi
+- --chrome PATH     Menentukan lokasi chrome.exe secara manual
+
+Contoh:
+
+    .\.venv\Scripts\python.exe .\server.py --no-browser --port 8001
+
+
+4. MENJALANKAN MODE CLI
+-----------------------
+Dari folder proyek, jalankan menu CLI:
+
+    .\.venv\Scripts\python.exe .\create_chrome_profile.py
+
+Menu interaktif tersedia di terminal. Pilih opsi yang ditampilkan untuk
+membuat, membuka, menutup, Grab, atau menghapus profil Chrome.
+
+Contoh membuka profil tertentu tanpa menu:
+
+    .\.venv\Scripts\python.exe .\create_chrome_profile.py --profile-id gemini-test-01
+
+Opsi CLI lainnya dapat dilihat dengan:
+
+    .\.venv\Scripts\python.exe .\create_chrome_profile.py --help
+
+Profil Chrome disimpan terpisah dari folder proyek, di:
+%LOCALAPPDATA%\AMB Media V5\ChromeProfiles
+
+
+5. PROMPT BRIDGE (OPSIONAL)
+---------------------------
+Untuk menggunakan tab Prompt Bridge:
+1. Di Chrome pada profil yang dituju, buka chrome://extensions.
+2. Aktifkan Developer mode, pilih Load unpacked, lalu pilih folder
+   gemini-prompt-bridge-extension di dalam folder proyek.
+3. Jalankan server UI, buka tab Prompt Bridge, lalu tekan Jalankan.
+4. Masukkan alamat dan kunci lokal yang ditampilkan UI ke pengaturan extension.
+5. Biarkan tab Gemini terbuka pada profil target dan extension terhubung.
+
+Bridge hanya menerima koneksi lokal. Jangan membagikan kunci bridge.
+
+
+CATATAN
+-------
+- Untuk login pertama, masukkan kredensial Google pada form Grab. Password
+  hanya digunakan selama proses dan tidak disimpan aplikasi.
+- Jangan membuka ID profil yang sama pada beberapa proses Chrome sekaligus.
+- Tutup Chrome untuk profil tersebut sebelum memakai Grab, Buka, atau Hapus.
+- Jika baru memasang Python atau mengubah PATH, buka terminal baru.

@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AMB Mode</title>
+<style>
+:root,[data-theme="dark"]{color-scheme:dark;--bg:#0d1217;--panel:#141c23;--panel-raised:#19232c;--ink:#edf3f6;--mute:#91a1ac;--line:#293640;--accent:#42c7b5;--accent-hover:#5cddca;--accent-ink:#09201e;--ok:#62d59a;--warn:#f0bb62;--bad:#ff8989;--logbg:#0a1015;--logink:#d7e4ea;--header-bg:rgba(13,18,23,.9);--nav-bg:#10171d;--button-bg:#172129;--button-hover:#1b2b32;--input-bg:#10171d;--card-bg:rgba(11,17,22,.48);--card-hover:rgba(18,29,36,.82);--card-border-hover:#3a515c;--avatar-bg:#20313a;--avatar-ink:#a6eee2;--email-ink:#8b9aa3;--log-border:#1e2b33;--bridge-bg:rgba(10,16,21,.45);--code-bg:#0d1419;--dialog-bg:#172129;--dialog-border:#3a4b55;--backdrop:rgba(2,7,10,.72);--shadow:0 18px 48px rgba(0,0,0,.18)}
+[data-theme="light"]{color-scheme:light;--bg:#dfe7e3;--panel:#f4f7f5;--panel-raised:#fbfdfc;--ink:#1d2b27;--mute:#586b63;--line:#c5d2cb;--accent:#087f75;--accent-hover:#096e66;--accent-ink:#ffffff;--ok:#187447;--warn:#875c17;--bad:#a8323c;--logbg:#e5ece8;--logink:#263832;--header-bg:rgba(232,239,235,.96);--nav-bg:#cbd8d1;--nav-hover:#d8e3dd;--nav-active-border:#aebfb6;--button-bg:#edf2ef;--button-hover:#dfece7;--input-bg:#edf2ef;--card-bg:#e9efeb;--card-hover:#e2ebe6;--card-border-hover:#9db7aa;--avatar-bg:#d8e9e2;--avatar-ink:#176e64;--email-ink:#687a72;--log-border:#c8d5ce;--bridge-bg:#eaf0ec;--code-bg:#dfe8e3;--dialog-bg:#f3f6f3;--dialog-border:#becdc4;--backdrop:rgba(26,42,35,.42);--shadow:0 18px 48px rgba(32,59,48,.1)}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 10% -15%,rgba(66,199,181,.09),transparent 38%),var(--bg);color:var(--ink);font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;align-items:center;gap:.75rem 1.5rem;padding:.85rem clamp(1rem,3vw,2.5rem);border-bottom:1px solid var(--line);background:var(--header-bg);backdrop-filter:blur(16px)}
+.brand{display:flex;align-items:center;gap:.75rem}
+.brand-mark{display:grid;place-items:center;width:2.35rem;height:2.35rem;border:1px solid rgba(66,199,181,.35);border-radius:10px;background:rgba(66,199,181,.12);color:var(--accent);font-size:.75rem;font-weight:850;letter-spacing:.04em}
+h1{font-size:1.05rem;margin:0;font-weight:720;letter-spacing:.01em}
+.brand-caption{color:var(--mute);font-size:.72rem;line-height:1.2}
+nav{display:flex;gap:.25rem;margin-left:auto;padding:.22rem;border:1px solid var(--line);border-radius:10px;background:var(--nav-bg)}
+nav button{background:none;border:1px solid transparent;border-radius:7px;padding:.42rem .8rem;color:var(--mute);font:inherit;font-size:.82rem;cursor:pointer;transition:background .16s ease,color .16s ease}
+nav button:hover{background:var(--nav-hover,var(--button-hover));color:var(--ink)}
+nav button[aria-selected=true]{color:var(--ink);border-color:var(--line);background:var(--panel-raised);box-shadow:0 2px 8px rgba(0,0,0,.08)}
+[data-theme="light"] nav{border-color:#b8c7bf;box-shadow:inset 0 1px 2px rgba(37,61,49,.08)}
+[data-theme="light"] nav button{color:#4d6258}
+[data-theme="light"] nav button[aria-selected=true]{color:#173b32;border-color:var(--nav-active-border);background:#f8fbf9;box-shadow:0 2px 5px rgba(35,59,47,.16)}
+.theme-toggle{display:grid;place-items:center;flex:none;width:2.35rem;height:2.35rem;padding:0;border:1px solid var(--line);border-radius:9px;background:var(--button-bg);color:var(--ink);cursor:pointer;transition:border-color .16s ease,background .16s ease,transform .15s ease}
+.theme-toggle:hover{border-color:var(--accent);background:var(--button-hover)}
+.theme-toggle:active{transform:translateY(1px)}
+.theme-toggle svg{width:1.1rem;height:1.1rem}
+.theme-icon-light{display:none}
+[data-theme="light"] .theme-icon-dark{display:none}
+[data-theme="light"] .theme-icon-light{display:block}
+main{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(19rem,.85fr);align-items:start;gap:1.15rem;padding:clamp(1rem,3vw,2rem);max-width:1480px;margin:0 auto}
+.col{min-width:0}
+section{min-width:0;padding:1.25rem;border:1px solid var(--line);border-radius:14px;background:var(--panel);box-shadow:var(--shadow)}
+h2{font-size:1rem;margin:0;font-weight:680;letter-spacing:.005em}
+.section-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1.1rem}
+.section-title{display:grid;gap:.16rem}
+.section-title p{margin:0;color:var(--mute);font-size:.78rem}
+.section-tools{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.count-badge{color:var(--mute);font-size:.75rem;white-space:nowrap}
+button,input,textarea{font:inherit;color:inherit}
+.btn{border:1px solid var(--line);background:var(--button-bg);border-radius:8px;padding:.43rem .75rem;cursor:pointer;transition:transform .15s ease,border-color .15s ease,background .15s ease}
+.btn:hover:not(:disabled){border-color:var(--accent);background:var(--button-hover)}
+.btn:active:not(:disabled){transform:translateY(1px)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.main{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:680}
+.btn.main:hover:not(:disabled){background:var(--accent-hover);border-color:var(--accent-hover)}
+.btn.danger{color:var(--bad)}
+.btn.danger:hover:not(:disabled){border-color:var(--bad);background:color-mix(in srgb,var(--bad) 8%,transparent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+input,textarea,select{width:100%;background:var(--input-bg);border:1px solid var(--line);border-radius:8px;padding:.58rem .7rem}
+input:focus,textarea:focus,select:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px rgba(66,199,181,.12)}
+label{display:block;font-size:.8rem;color:var(--mute);margin:.8rem 0 .3rem}
+.row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.sub{color:var(--mute);font-size:.78rem}
+.profile-list{display:grid;gap:.7rem}
+.profile-card{display:flex;align-items:center;justify-content:space-between;gap:1rem;min-width:0;padding:.9rem;border:1px solid var(--line);border-radius:12px;background:var(--card-bg);transition:border-color .16s ease,background .16s ease}
+.profile-card:hover{border-color:var(--card-border-hover);background:var(--card-hover)}
+.profile-card.is-active{border-color:rgba(98,213,154,.25)}
+.profile-card.is-busy{border-color:rgba(240,187,98,.32)}
+.profile-info{display:flex;align-items:center;gap:.75rem;min-width:0}
+.profile-avatar{display:grid;place-items:center;flex:none;width:2.5rem;height:2.5rem;border-radius:10px;background:var(--avatar-bg);color:var(--avatar-ink);font-size:.95rem;font-weight:750;text-transform:uppercase}
+.profile-copy{display:grid;gap:.12rem;min-width:0}
+.profile-heading{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
+.profile-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.9rem;font-weight:680}
+.profile-email{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--email-ink);font-size:.74rem}
+.profile-status{display:inline-flex;align-items:center;gap:.35rem;color:var(--mute);font-size:.72rem}
+.status-dot{width:.42rem;height:.42rem;border-radius:50%;background:#60717b}
+.profile-status.is-active{color:var(--ok)}
+.profile-status.is-active .status-dot{background:var(--ok);box-shadow:0 0 10px rgba(98,213,154,.4)}
+.profile-status.is-busy{color:var(--warn)}
+.profile-status.is-busy .status-dot{background:var(--warn)}
+.actions{display:flex;justify-content:flex-end;gap:.35rem;flex-wrap:wrap;flex:none}
+.actions .btn{padding:.36rem .62rem;font-size:.78rem}
+.action-hint{flex-basis:100%;color:var(--mute);font-size:.68rem;line-height:1.35;text-align:right}
+.empty{padding:1.3rem;border:1px dashed #35454e;border-radius:10px;color:var(--mute);text-align:center}
+#jobPanel{position:sticky;top:5.7rem}
+.job-heading{display:flex;align-items:center;justify-content:space-between;gap:.7rem;margin-bottom:.85rem}
+.job-heading h2{flex:none}
+.job-title{min-width:0;margin-left:auto;overflow:hidden;color:var(--mute);font-size:.72rem;text-overflow:ellipsis;white-space:nowrap}
+.job-indicator{width:.55rem;height:.55rem;border-radius:50%;background:#56656e}
+#clearLog{flex:none;padding:.32rem .55rem;font-size:.72rem}
+.server-info{display:grid;gap:.5rem;margin-bottom:.85rem;padding:.75rem;border:1px solid var(--line);border-radius:10px;background:var(--bridge-bg)}
+.server-info h3{margin:0;color:var(--mute);font-size:.7rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase}
+.server-info-list{display:grid;gap:.38rem;margin:0}
+.server-info-item{display:grid;grid-template-columns:5.5rem minmax(0,1fr);gap:.5rem;font-size:.72rem;line-height:1.4}
+.server-info-item dt{color:var(--mute)}
+.server-info-item dd{min-width:0;margin:0;overflow-wrap:anywhere}
+.server-info-item .server-ok{color:var(--ok)}
+.server-info-item .server-error{color:var(--bad)}
+#log{min-height:200px;max-height:min(42vh,440px);overflow:auto;padding:.9rem;border:1px solid var(--log-border);border-radius:10px;background:var(--logbg);color:var(--logink);font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+#log:empty::before{content:attr(data-empty);color:var(--mute);font:inherit}
+#prompt{margin-top:.7rem;padding:.8rem;border:1px solid rgba(240,187,98,.4);border-radius:10px;background:rgba(240,187,98,.05);display:none}
+#prompt .row{align-items:stretch}
+#pInput{flex:1;min-width:10rem}
+#cancel{margin-top:.7rem}
+.err{color:var(--bad);font-size:.82rem;min-height:1.2em;margin-top:.4rem}
+.bridge-info{padding:.7rem;border:1px solid var(--line);border-radius:9px;background:var(--bridge-bg);overflow-wrap:anywhere}
+.hist{margin:.8rem 0 0;padding:0;list-style:none;font-size:.82rem}
+.hist li{padding:.65rem 0;border-top:1px solid var(--line)}
+.tag{font-size:.7rem;padding:.08rem .45rem;border-radius:99px;border:1px solid var(--line);margin-left:.4rem}
+.tag.prompt_sent{color:var(--ok);border-color:var(--ok)}
+.tag.gagal,.tag.composer_not_found{color:var(--bad);border-color:var(--bad)}
+code{background:var(--code-bg);padding:.16rem .35rem;border-radius:5px;word-break:break-all}
+dialog{background:var(--dialog-bg);color:var(--ink);border:1px solid var(--dialog-border);border-radius:14px;padding:1.4rem;width:min(440px,92vw);box-shadow:0 24px 80px rgba(0,0,0,.22)}
+dialog::backdrop{background:var(--backdrop);backdrop-filter:blur(4px)}
+.hidden{display:none!important}
+@media(max-width:920px){main{grid-template-columns:1fr}#jobPanel{position:static}.profile-list{grid-template-columns:repeat(auto-fit,minmax(min(100%,22rem),1fr))}.profile-card{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:flex-start;padding-left:3.25rem}.actions .btn{flex:1}.action-hint{text-align:left}}
+@media(max-width:650px){header{gap:.65rem}nav{margin-left:auto}nav button{padding:.38rem .55rem;font-size:.76rem}main{gap:.8rem;padding:.85rem}.section-heading{align-items:flex-start;flex-wrap:wrap}section{padding:1rem}.profile-card{align-items:flex-start;flex-direction:column}.actions{width:100%;justify-content:flex-start;padding-left:3.25rem}.actions .btn{flex:1}#log{min-height:180px;max-height:45vh}.job-heading{flex-wrap:wrap}.job-title{order:3;flex-basis:100%;margin-left:0}.server-info-item{grid-template-columns:4.7rem minmax(0,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="brand-mark" aria-hidden="true">AMB</div><div><h1>AMB Mode</h1><div class="brand-caption">PROFILE CONTROL CENTER</div></div></div>
+  <button class="theme-toggle" id="themeToggle" type="button" aria-label="Aktifkan mode terang" title="Aktifkan mode terang">
+    <svg class="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42"></path></svg>
+    <svg class="theme-icon-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.2 15.2A8.5 8.5 0 0 1 8.8 3.8 8.5 8.5 0 1 0 20.2 15.2Z"></path></svg>
+  </button>
+  <nav role="tablist">
+    <button role="tab" data-tab="profil" aria-selected="true">Profil Chrome</button>
+    <button role="tab" data-tab="bridge" aria-selected="false">Prompt Bridge</button>
+  </nav>
+</header>
+
+<main>
+  <div id="tab-profil" class="col">
+    <section>
+      <div class="section-heading">
+        <div class="section-title"><h2>Profil Chrome</h2><p>Kelola profil dan sesi browser kamu.</p></div>
+        <div class="section-tools">
+          <span class="count-badge" id="profileCount">0 profil</span>
+          <button class="btn" id="newBtn">Profil baru</button>
+          <button class="btn danger" id="delAll">Hapus semua</button>
+        </div>
+      </div>
+      <div class="sub" id="statusErr"></div>
+      <div class="profile-list" id="profiles"></div>
+      <div class="empty hidden" id="noProfiles">Belum ada profil. Buat satu lewat “Profil baru”.</div>
+    </section>
+  </div>
+
+  <div id="tab-bridge" class="col hidden">
+    <section>
+      <div class="section-heading">
+        <div class="section-title"><h2>Prompt Bridge</h2><p>Kirim prompt ke extension Gemini yang terhubung.</p></div>
+        <div class="section-tools"><button class="btn main" id="bStart">Jalankan</button><button class="btn" id="bStop">Hentikan</button></div>
+      </div>
+      <p class="sub bridge-info" id="bInfo"></p>
+      <label for="bProfile">Profil target (harus sudah terhubung)</label>
+      <select id="bProfile"></select>
+      <label for="bPrompt">Prompt Gemini</label>
+      <textarea id="bPrompt" rows="5" maxlength="5000"></textarea>
+      <div class="row" style="justify-content:space-between;margin-top:.6rem"><span class="sub" id="bCount">0 / 5000</span><button class="btn main" id="bSend">Kirim prompt</button></div>
+      <div class="err" id="bErr"></div>
+      <ul class="hist" id="hist"></ul>
+    </section>
+  </div>
+
+  <section id="jobPanel">
+    <div class="job-heading"><h2>Aktivitas</h2><span class="job-title" id="jobTitle">Belum ada proses</span><button class="btn" id="clearLog" type="button" disabled>Bersihkan log</button></div>
+    <div class="server-info" id="serverInfo" aria-label="Info server">
+      <h3>Info server</h3>
+      <dl class="server-info-list" id="serverInfoList"><div class="server-info-item"><dt>Status</dt><dd>Memeriksa...</dd></div></dl>
+    </div>
+    <div id="log" role="log" aria-live="polite" data-empty="Belum ada aktivitas. Output aksi akan muncul di sini."></div>
+    <form id="prompt">
+      <label id="pText" for="pInput"></label>
+      <div class="row">
+        <input id="pInput" autocomplete="off" style="flex:1">
+        <button class="btn main" id="pOk" type="submit"></button>
+      </div>
+    </form>
+    <div class="row" style="margin-top:.6rem"><button class="btn" id="cancel" disabled>Batalkan</button></div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form id="dlgForm" method="dialog">
+    <h2 id="dlgTitle"></h2>
+    <div id="dlgNew"><label for="dId">ID profil baru</label><input id="dId" autocomplete="off"></div>
+    <div id="dlgCred">
+      <label for="dEmail">Email Google</label><input id="dEmail" type="email" autocomplete="off">
+      <label for="dPass">Password Google</label><input id="dPass" type="password" autocomplete="off">
+      <p class="sub">Dipakai hanya jika Gemini belum login. Disimpan di memori selama proses, tidak ditulis ke disk.</p>
+    </div>
+    <div class="err" id="dErr"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:.8rem">
+      <button class="btn" value="cancel" type="button" id="dCancel">Batal</button>
+      <button class="btn main" id="dOk" type="submit">Mulai</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const TOKEN="__TOKEN__";
+const $=s=>document.querySelector(s);
+const themeToggle=$("#themeToggle");
+function setTheme(theme){
+  const isLight=theme==="light";
+  document.documentElement.dataset.theme=isLight?"light":"dark";
+  themeToggle.setAttribute("aria-label",isLight?"Aktifkan mode gelap":"Aktifkan mode terang");
+  themeToggle.title=isLight?"Aktifkan mode gelap":"Aktifkan mode terang";
+}
+setTheme(localStorage.getItem("amb-mode-theme")==="light"?"light":"dark");
+themeToggle.onclick=()=>{
+  const theme=document.documentElement.dataset.theme==="dark"?"light":"dark";
+  setTheme(theme);
+  localStorage.setItem("amb-mode-theme",theme);
+};
+async function api(path,method="GET",body){
+  const r=await fetch("/api"+path,{method,headers:{"X-UI-Token":TOKEN,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.error||("HTTP "+r.status));
+  return d;
+}
+
+/* ---- tabs */
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll("nav button").forEach(x=>x.setAttribute("aria-selected",x===b));
+  ["profil","bridge"].forEach(t=>$("#tab-"+t).classList.toggle("hidden",t!==b.dataset.tab));
+});
+
+/* ---- job watcher */
+let job=null,since=0,timer=null;
+function logAdd(t){const l=$("#log");l.textContent+=t+"\n";l.scrollTop=l.scrollHeight;$("#clearLog").disabled=!l.textContent}
+function logClear(){$("#log").textContent="";$("#clearLog").disabled=true}
+$("#clearLog").onclick=logClear;
+function watch(j){
+  job=j.id;since=0;logClear();$("#jobTitle").textContent=j.title;
+  clearTimeout(timer);tick();
+}
+async function tick(){
+  if(!job)return;
+  try{
+    const j=await api(`/jobs/${job}?since=${since}`);
+    j.lines.forEach(logAdd);since=j.next;
+    const p=j.prompt;$("#prompt").style.display=p?"block":"none";
+    if(p&&$("#prompt").dataset.t!==p.text){
+      $("#prompt").dataset.t=p.text;$("#pText").textContent=p.text.replace(/\s*:\s*$/,"");
+      const i=$("#pInput");i.type=p.secret?"password":"text";i.value="";i.classList.toggle("hidden",p.enter_only);
+      $("#pOk").textContent=p.enter_only?"Selesai, tutup Chrome":"Kirim";if(!p.enter_only)i.focus();
+    }
+    if(!p)$("#prompt").dataset.t="";
+    const live=j.status==="running"||j.status==="waiting";
+    $("#cancel").disabled=!live;
+    if(live){timer=setTimeout(tick,700)}else{logAdd(`— ${j.status==="done"?"selesai":"gagal"} (kode ${j.code})`);job=null;refresh()}
+  }catch(e){logAdd("Gagal membaca job: "+e.message);job=null}
+}
+$("#prompt").onsubmit=async e=>{e.preventDefault();if(!job)return;
+  try{await api(`/jobs/${job}/answer`,"POST",{value:$("#pInput").value});$("#pInput").value=""}catch(x){logAdd(x.message)}};
+$("#cancel").onclick=()=>job&&api(`/jobs/${job}/cancel`,"POST").catch(()=>{});
+
+async function run(path,body,method="POST"){
+  try{watch(await api(path,method,body))}catch(e){alert(e.message)}
+}
+
+/* ---- profiles */
+let S=null;
+function renderServerInfo(state){
+  const list=$("#serverInfoList");
+  const rows=[
+    ["Chrome",state.chrome?"Terdeteksi":"Tidak ditemukan",state.chrome?"server-ok":"server-error"],
+    ...(state.chrome?[["Lokasi",state.chrome,""]]:[]),
+    ["Folder profil",state.profiles_dir,""],
+    ["Mode uji",state.dry_run?"Aktif":"Nonaktif",state.dry_run?"":"server-ok"],
+    ...(state.status_error?[["Peringatan",state.status_error,"server-error"]]:[]),
+  ];
+  list.replaceChildren(...rows.map(([label,value,statusClass])=>{
+    const item=document.createElement("div");
+    item.className="server-info-item";
+    const term=document.createElement("dt");
+    term.textContent=label;
+    const detail=document.createElement("dd");
+    detail.className=statusClass;
+    detail.textContent=value;
+    item.append(term,detail);
+    return item;
+  }));
+}
+function row(p){
+  const active=p.pids.length>0;
+  const card=document.createElement("article");
+  card.className=`profile-card${active?" is-active":""}${p.busy?" is-busy":""}`;
+  const info=document.createElement("div");
+  info.className="profile-info";
+  const avatar=document.createElement("span");
+  avatar.className="profile-avatar";
+  avatar.setAttribute("aria-hidden","true");
+  avatar.textContent=p.id.slice(0,1);
+  const copy=document.createElement("div");
+  copy.className="profile-copy";
+  const heading=document.createElement("div");
+  heading.className="profile-heading";
+  const name=document.createElement("strong");
+  name.className="profile-name";
+  name.textContent=p.id;
+  const status=document.createElement("span");
+  status.className=`profile-status${p.busy?" is-busy":active?" is-active":""}`;
+  const statusDot=document.createElement("span");
+  statusDot.className="status-dot";
+  statusDot.setAttribute("aria-hidden","true");
+  const label=p.busy?"Sedang diproses":active?`Chrome terbuka · PID ${p.pids.join(", ")}`:S.status_error?"Status Chrome tidak terbaca":"Chrome tertutup";
+  status.append(statusDot,document.createTextNode(label));
+  heading.append(name,status);
+  copy.append(heading);
+  if(p.email){
+    const email=document.createElement("span");
+    email.className="profile-email";
+    email.textContent=p.email;
+    copy.append(email);
+  }
+  info.append(avatar,copy);
+  const actions=document.createElement("div");
+  actions.className="actions";
+  const hintId=`profile-action-hint-${p.id}`;
+  const add=(t,cls,blockedReason,fn)=>{
+    const b=document.createElement("button");
+    b.className="btn "+cls;
+    b.textContent=t;
+    const reason=p.busy?"Profil sedang diproses.":blockedReason;
+    b.disabled=Boolean(reason);
+    if(reason){b.title=reason;b.setAttribute("aria-describedby",hintId)}
+    b.onclick=fn;
+    actions.append(b);
+  };
+  add("Grab","main",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.":"",()=>dialog("grab",p.id));
+  add("Buka","",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.":"",()=>run(`/profiles/${encodeURIComponent(p.id)}/open`,{}));
+  add("Tutup","","",()=>run(`/profiles/${encodeURIComponent(p.id)}/close`,{}));
+  add("Hapus","danger",active?"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.":"",()=>confirm(`Hapus profil '${p.id}' beserta sesinya?`)&&run("/profiles/delete",{ids:[p.id]}));
+  if(active||p.busy){
+    const hint=document.createElement("span");
+    hint.className="action-hint";
+    hint.id=hintId;
+    hint.textContent=p.busy?"Aksi profil dinonaktifkan selama proses berjalan.":"Tutup Chrome untuk mengaktifkan Grab, Buka, dan Hapus.";
+    actions.append(hint);
+  }
+  card.append(info,actions);
+  return card;
+}
+$("#delAll").onclick=()=>confirm("Hapus SEMUA profil yang tidak aktif? Sesi login di dalamnya ikut hilang.")&&run("/profiles/delete",{all:true});
+
+async function refresh(){
+  try{
+    S=await api("/state");
+    renderServerInfo(S);
+    $("#profileCount").textContent=`${S.profiles.length} profil`;
+    $("#statusErr").textContent=S.status_error||"";
+    const tb=$("#profiles");tb.replaceChildren(...S.profiles.map(row));
+    $("#noProfiles").classList.toggle("hidden",S.profiles.length>0);
+    renderBridge(S.bridge);
+  }catch(e){
+    $("#statusErr").textContent=e.message;
+    $("#serverInfoList").replaceChildren(Object.assign(document.createElement("div"),{className:"server-info-item",textContent:`Gagal memuat status server: ${e.message}`}));
+  }
+}
+
+/* ---- dialog (profil baru / grab) */
+let dlgMode=null,dlgId=null;
+function dialog(mode,id){
+  dlgMode=mode;dlgId=id;$("#dErr").textContent="";
+  $("#dlgTitle").textContent=mode==="new"?"Profil baru + Grab":`Grab: ${id}`;
+  $("#dlgNew").classList.toggle("hidden",mode!=="new");
+  $("#dlgForm").reset();$("#dlg").showModal();
+}
+$("#newBtn").onclick=()=>dialog("new");
+$("#dCancel").onclick=()=>$("#dlg").close();
+$("#dlgForm").onsubmit=async e=>{
+  e.preventDefault();
+  const body={email:$("#dEmail").value,password:$("#dPass").value};
+  try{
+    let j;
+    if(dlgMode==="new"){body.id=$("#dId").value;j=await api("/profiles/new-grab","POST",body)}
+    else j=await api(`/profiles/${encodeURIComponent(dlgId)}/grab`,"POST",body);
+    $("#dlgForm").reset();$("#dlg").close();watch(j);
+  }catch(x){$("#dErr").textContent=x.message}
+};
+
+/* ---- bridge */
+let bridgeInfo=null;
+function renderBridge(b){
+  $("#bStart").disabled=b.running;$("#bStop").disabled=!b.running;
+  const sel=$("#bProfile"),cur=sel.value;
+  sel.replaceChildren(...b.connected.map(id=>new Option(id,id)));
+  if(b.connected.includes(cur))sel.value=cur;
+  $("#bSend").disabled=!b.running||!b.connected.length;
+  const ul=$("#hist");ul.replaceChildren(...b.history.slice(0,8).map(c=>{
+    const li=document.createElement("li");
+    const t=document.createElement("span");t.className="tag "+c.status;t.textContent=c.status;
+    li.append(document.createTextNode(c.profile_id+": "+c.prompt.slice(0,70)+(c.prompt.length>70?"…":"")),t);
+    if(c.detail&&c.status!=="prompt_sent"){const d=document.createElement("div");d.className="sub";d.textContent=c.detail;li.append(d)}
+    return li}));
+}
+async function bridgeMeta(){
+  try{
+    const b=await api("/bridge");
+    $("#bInfo").replaceChildren();
+    const s=document.createElement("span");
+    if(b.error){s.textContent=b.error}
+    else{s.append("Alamat ",Object.assign(document.createElement("code"),{textContent:b.address})," · kunci lokal (isi di popup extension): ",Object.assign(document.createElement("code"),{textContent:b.key}))}
+    $("#bInfo").append(s);
+    if(b.running&&b.job&&!job){/* ikut tampilkan log bridge bila belum ada job lain */}
+  }catch(e){$("#bInfo").textContent=e.message}
+}
+$("#bStart").onclick=async()=>{try{watch(await api("/bridge/start","POST"))}catch(e){$("#bErr").textContent=e.message}};
+$("#bStop").onclick=()=>api("/bridge/stop","POST").then(refresh).catch(e=>$("#bErr").textContent=e.message);
+$("#bPrompt").oninput=e=>$("#bCount").textContent=`${e.target.value.length} / 5000`;
+$("#bSend").onclick=async()=>{
+  $("#bErr").textContent="";
+  try{await api("/bridge/send","POST",{profile_id:$("#bProfile").value,prompt:$("#bPrompt").value});$("#bPrompt").value="";$("#bCount").textContent="0 / 5000";refresh()}
+  catch(e){$("#bErr").textContent=e.message}
+};
+
+refresh();bridgeMeta();setInterval(refresh,3000);
+</script>
+</body>
+</html>

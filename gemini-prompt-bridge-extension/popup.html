@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Gemini Prompt Bridge</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="mark" aria-hidden="true">G</div>
+        <div>
+          <h1>Gemini Bridge</h1>
+          <p>Penghubung Python lokal</p>
+        </div>
+      </header>
+
+      <button id="openSettings" class="secondary" type="button">Buka pengaturan di tab</button>
+
+      <label for="profileId">ID profil Python</label>
+      <input id="profileId" type="text" maxlength="64" placeholder="tes6" autocomplete="off">
+
+      <label for="bridgeKey">Kunci bridge lokal</label>
+      <input id="bridgeKey" type="password" autocomplete="off" spellcheck="false">
+
+      <button id="saveSettings" type="button">Simpan & hubungkan</button>
+      <div id="status" class="status" role="status">Memeriksa koneksi...</div>
+      <p class="note">Extension hanya mengirim prompt ke tab Gemini pada profil ini. Data akun dan sesi tidak diambil.</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

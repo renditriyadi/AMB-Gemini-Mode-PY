@@ -1,0 +1,26 @@
+body.settings-page {
+  width: auto;
+  min-width: 360px;
+  min-height: 100vh;
+  background: #f3f5f8;
+}
+
+.settings-page main {
+  width: min(100% - 40px, 560px);
+  margin: 48px auto;
+  padding: 28px;
+  border: 1px solid #d6dce3;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 26px rgb(23 33 43 / 8%);
+}
+
+.settings-page header { margin-bottom: 26px; }
+.settings-page h1 { font-size: 19px; }
+.settings-page header p { font-size: 12px; }
+.settings-form { max-width: 440px; }
+.settings-page label { margin-top: 18px; font-size: 12px; }
+.settings-page input { height: 42px; font-size: 14px; }
+.settings-page button { height: 42px; font-size: 13px; }
+.settings-page .status { margin-top: 16px; font-size: 12px; }
+.settings-page .note { max-width: 440px; margin-top: 22px; font-size: 12px; }

@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Penghubung Prompt Gemini Python",
+  "version": "0.1.0",
+  "description": "Menghubungkan CLI Python lokal ke kolom chat Gemini pada profil Chrome ini.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://gemini.google.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "action": {
+    "default_title": "Gemini Python Prompt Bridge",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
